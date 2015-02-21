@@ -38,7 +38,7 @@ ServiceBuilder& ServiceBuilder::disableLinger() {
   return *this;
 }
 
-const Service ServiceBuilder::build() const {
+int ServiceBuilder::initSocket() const {
   // Initialize socket
   int sd = ::socket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
   if (sd == -1) {
@@ -87,10 +87,29 @@ const Service ServiceBuilder::build() const {
     throw SocketException("Failed to listen on socket");
   }
 
+  return sd;
+}
+
+const Service ServiceBuilder::build() const {
+  // Open socket and fetch sd
+  int sd = initSocket();
+
   // Compose Service
   if (isLingerEnabled_) {
     return Service(sd, lingerDuration_);
   } else {
     return Service(sd);
+  }
+}
+
+const Service* ServiceBuilder::buildNew() const {
+  // Open socket and fetch sd
+  int sd = initSocket();
+
+  // Compose Service
+  if (isLingerEnabled_) {
+    return new Service(sd, lingerDuration_);
+  } else {
+    return new Service(sd);
   }
 }

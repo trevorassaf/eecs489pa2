@@ -44,6 +44,13 @@ class ServiceBuilder {
      */
     unsigned int lingerDuration_;
 
+    /**
+     * initSocket()
+     * - Initialize listening socket.
+     * @return sd of socket
+     */
+    int initSocket() const;
+
   public:
     /**
      * ServiceBuilder()
@@ -94,5 +101,10 @@ class ServiceBuilder {
      * - Spawn socket and set to listen on port.
      */
     const Service build() const; 
-    
+
+    /**
+     * build()
+     * - Spawn socket w/dynamic memory and set to listen on port.
+     */
+    const Service* buildNew() const;
 };

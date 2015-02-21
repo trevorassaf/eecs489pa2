@@ -102,6 +102,12 @@ class Connection {
     const std::string& getRemoteDomainName() const;
 
     /**
+     * close()
+     * - Close socket.
+     */
+    void close() const;
+
+    /**
      * operator==
      * - Return true iff the local/remote name/ports are equivalent.
      */
@@ -112,11 +118,5 @@ class Connection {
      * - Return true iff operator== returns false.
      */
     bool operator!=(const Connection& other) const;
-    
-    /**
-     * close()
-     * - Close socket.
-     */
-    void close() const;
 
 };
