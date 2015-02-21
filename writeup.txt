@@ -1,0 +1,4 @@
+EECS 489 P2 Writeup
+
+1. Tested on Mac OS and Linux
+
