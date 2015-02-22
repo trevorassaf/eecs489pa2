@@ -21,6 +21,7 @@
 #include "SocketException.h"
 #include "netimg.h"
 #include "DhtNode.h"
+#include "Selector.h"
 
 #define SHA1_LENGTH 20 // bytes
 #define ID_LENGTH 20

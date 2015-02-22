@@ -9,6 +9,7 @@ DHTDB_OBJS = main.o \
 			 imgdb.o \
 			 hash.o \
 			 DhtNode.o \
+			 Selector.o \
 			 SocketException.o
 DHTDB_HEADERS = ServiceBuilder.h \
 			 Service.h \
@@ -19,6 +20,7 @@ DHTDB_HEADERS = ServiceBuilder.h \
 			 packets.h \
 			 hash.h \
 			 DhtNode.h \
+			 Selector.h \
 			 SocketException.h
 DHTDB_EXE = dhtdb
 
@@ -67,6 +69,9 @@ hash.o: hash.h netimg.h
 
 DhtNode.o: DhtNode.h ServerBuilder.h ServiceBuilder.h Service.h Connection.h SocketException.h hash.h
 	$(CC) $(CXXFLAGS) -c DhtNode.cpp
+
+Selector.o: Selector.h
+	$(CC) $(CXXFLAGS) -c Selector.cpp
 
 SocketException.o: SocketException.h
 	$(CC) $(CXXFLAGS) -c SocketException.cpp

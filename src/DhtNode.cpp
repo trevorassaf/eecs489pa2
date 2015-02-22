@@ -66,8 +66,6 @@ void DhtNode::deriveId() {
   
   // Fold SHA1 hash into node id 
   id_ = ID(md);
-
-  reportId();
 }
 
 void DhtNode::reportId() const {
