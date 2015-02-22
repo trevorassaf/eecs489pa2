@@ -26,12 +26,17 @@ class Service {
     /**
      * Port number for this service in network-byte-order.
      */
-    u_short port_;
+    uint16_t port_;
 
     /**
      * Domain name of service host.
      */
     std::string domainName_;
+
+    /**
+     * Ipv4 address of host.
+     */
+    uint32_t ipv4_;
 
     /**
      * Specifies if socket should linger after closure.
@@ -84,13 +89,19 @@ class Service {
      * getPort()
      * - Return port that this service is running on in network-byte-order.
      */
-    u_short getPort() const;
+    uint16_t getPort() const;
 
     /**
      * getDomainName()
      * - Return the domain name of this host.
      */
     const std::string& getDomainName() const;
+
+    /**
+     * getIpv4()
+     * - Retur ipv4 of host.
+     */
+    uint32_t getIpv4() const;
 
     /**
      * accept()

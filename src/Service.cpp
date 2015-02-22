@@ -30,9 +30,10 @@ void Service::initService() {
   }
 
   port_ = ntohs(sin.sin_port);
+  ipv4_ = ntohl(sin.sin_addr.s_addr);
   
   char hostname_buff[MAXFQDN + 1];
-  memset(hostname_buff, 0, MAXFQDN);
+  ::memset(hostname_buff, 0, MAXFQDN);
   if (::gethostname(hostname_buff, MAXFQDN) == -1) {
     throw SocketException("Failed to fetch name of this host.");
   }
@@ -71,12 +72,16 @@ int Service::getFd() const {
   return fileDescriptor_;
 }
 
-u_short Service::getPort() const {
+uint16_t Service::getPort() const {
   return port_;
 }
 
 const std::string& Service::getDomainName() const {
   return domainName_;
+}
+
+uint32_t Service::getIpv4() const {
+  return ipv4_;
 }
 
 const Connection Service::accept() const {

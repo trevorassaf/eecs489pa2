@@ -20,6 +20,7 @@
 #include "ltga.h"
 #include "SocketException.h"
 #include "netimg.h"
+#include "DhtNode.h"
 
 #define SHA1_LENGTH 20 // bytes
 #define ID_LENGTH 20
@@ -55,7 +56,7 @@ struct cli_targ_config_t {
  * Configuration for id overridden node.
  */
 struct cli_id_config_t {
-  char id[ID_LENGTH + 1];
+  uint8_t id;
 };
 
 /**
@@ -126,17 +127,31 @@ const cli_targ_config_t deserializeTarget(const char* target) {
  * - Parse and validated id from cli string.
  * @param id : id string
  */
-const cli_id_config_t deserializeId(const char* id) {
-  // Fail b/c 'id' exceeds legal length
-  if (strlen(id) > ID_LENGTH) {
-    failCliWithMessage("Invalid id -- to long.");
+const cli_id_config_t deserializeId(const char* id_cstr) {
+  const std::string id_str(id_cstr);
+  try {
+    // Parse int from 'id_str'
+    int id_int = std::stoi(id_str); 
+    
+    // Validate id range 
+    if (id_int < 0) {
+      failCliWithMessage(std::string("Id must be non-negative: ") 
+          + std::to_string(id_int));
+    }
+
+    if (id_int >= NUM_IDS) {
+      failCliWithMessage(std::string("Id too large: ") + std::to_string(id_int)); 
+    }
+
+    return cli_id_config_t{static_cast<uint8_t>(id_int)};
+
+  } catch (const std::invalid_argument& e) {
+    failCliWithMessage(std::string("Non-numeric id: ") + id_str);
+  } catch (const std::out_of_range& e) {
+    failCliWithMessage(std::string("Id too large: ") + id_str);
   }
 
-  cli_id_config_t id_config;
-  memcpy(id_config.id, id, ID_LENGTH);
-  id_config.id[ID_LENGTH] = '\0';
-
-  return id_config;
+  exit(1); /* Should never hit this */
 }
 
 /**
@@ -204,6 +219,7 @@ size_t processCliParam(cli_config_t config, const char * const * cli_params, siz
  */
 const cli_config_t processDhtdbArgs(int argc, const char * const * argv) {
   size_t num_args = argc - 1;
+  const char * const * cli_args = argv + 1;
   
   // Fail due to superfluous cli args
   if (num_args > MAX_NUM_CLI_ARGS) {
@@ -212,10 +228,11 @@ const cli_config_t processDhtdbArgs(int argc, const char * const * argv) {
 
   // Process cli args
   cli_config_t config;
+  config.num_types = 0;
   size_t arg_idx = 0;
 
   while (arg_idx != num_args) {
-    arg_idx += processCliParam(config, argv + arg_idx, num_args - arg_idx);  
+    arg_idx += processCliParam(config, cli_args + arg_idx, num_args - arg_idx);  
   }
 
   return config;
@@ -225,10 +242,30 @@ int main(int argc, char** argv) {
   // Process cli args 
   const cli_config_t config = processDhtdbArgs(argc, argv);
 
-  // Initialize listening socket for accepting joins
-  ServiceBuilder service_builder;
-  Service dht_service = service_builder.build();
+  bool has_targ = false;
+  bool has_id = false;
 
-  
+  for (size_t i = 0; i < MAX_NUM_FLAGS; ++i) {
+    switch (config.types[i]) {
+      case ID_OVERRIDE:
+        has_id = true;
+        break;
+      case TARGET:
+        has_targ = true;
+        break;
+    }
+  }
+  // Initialize node w/id, if specified
+  DhtNode node = (has_id) 
+      ? DhtNode(config.id_config.id) 
+      : DhtNode();
+
+  // Connect to target, if target is specified,
+  if (has_targ) {
+    node.join(config.targ_config.fqdn, config.targ_config.port);  
+  }
+
+  node.listen(); 
+
   return 0;
 }

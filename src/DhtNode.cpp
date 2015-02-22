@@ -1,23 +1,39 @@
 #include "DhtNode.h"
 
-void DhtNode::initFingerTable() {
+void DhtNode::initFingers() {
   // Finger table should hold only FINGER_TABLE_SIZE fingers
   fingerTable_ = std::vector<finger_t>(FINGER_TABLE_SIZE);
-  uint16_t id_base = id_; 
   for (size_t i = 0; i < FINGER_TABLE_SIZE; ++i) {
-    id_base += 1 << i;
+  uint16_t unfolded_finger_id = (1 << i) + id_; 
     
     // Build finger pointing to *self*
     finger_t finger;
-    finger.finger_id = foldId(id_base + id_);
+    finger.finger_id = foldId(unfolded_finger_id);
     finger.node_id = id_;
 
     fingerTable_[i] = finger;
   }
+
+  predecessorNodeId_ = id_;
+
+  printFingers();
+}
+
+void DhtNode::printFingers() const {
+  std::cout << "--- FINGER PRINT ---" << std::endl;
+
+  for (size_t i = 0; i < FINGER_TABLE_SIZE; ++i) {
+    const finger_t finger = fingerTable_[i];
+    std::cout << "finger<idx: " << i << ", finger-id: " << (int) finger.finger_id
+        << ", node-id: " << (int) finger.node_id << std::endl;
+  }
+
+  std::cout << "predecessor<node-id: " << (int) predecessorNodeId_ 
+    << ">"<< std::endl;
 }
 
 void DhtNode::initReceiver() {
-
+  // Initialize listening socket
   ServiceBuilder builder;
   receiver_ = builder.buildNew();
 
@@ -27,24 +43,35 @@ void DhtNode::initReceiver() {
 }
 
 void DhtNode::deriveId() {
-  char addrport[SIZE_OF_ADDR_PORT + 1];
-  unsigned char md[SHA1_MDLEN];
 
-  // Compute SHA1 of address+port 
+  // Prepare SHA1 hash inpute: port+address
   uint16_t port = receiver_->getPort();
-  const std::string& domain_name = receiver_->getDomainName();
+  size_t port_num_bytes = sizeof(port);
   
-  memcpy(addrport, (char *) &port, sizeof(port));
-  memcpy(addrport + sizeof(port), domain_name.c_str(), domain_name.size());
-  addrport[SIZE_OF_ADDR_PORT] = '\0';
+  uint32_t ipv4 = receiver_->getIpv4();
+  size_t ipv4_num_bytes = sizeof(ipv4);
+  
+  size_t addrport_num_bytes = ipv4_num_bytes + port_num_bytes; 
+  char* addrport = new char[addrport_num_bytes + 1];
+  addrport[addrport_num_bytes] = '\0';
 
+  memcpy(addrport, (const char *) &port, port_num_bytes);
+  memcpy(addrport + port_num_bytes, (const char *) &ipv4, ipv4_num_bytes);
+
+  // Compute SHA1 hash
+  unsigned char md[SHA1_MDLEN + 1];
+  md[SHA1_MDLEN] = '\0';
   SHA1((unsigned char *) addrport, SIZE_OF_ADDR_PORT, md);
+  delete[] addrport;
   
   // Fold SHA1 hash into node id 
   id_ = ID(md);
 
-  // Report node id
-  std::cout << "DhtNode ID: " << id_ << std::endl;
+  reportId();
+}
+
+void DhtNode::reportId() const {
+  std::cout << "DhtNode ID: " << (int) id_ << std::endl;
 }
 
 uint8_t DhtNode::foldId(uint16_t unfolded_id) const {
@@ -53,16 +80,22 @@ uint8_t DhtNode::foldId(uint16_t unfolded_id) const {
 
 DhtNode::DhtNode(uint8_t id) : id_(id) {
   initReceiver();
-  initFingerTable();
+  initFingers();
+
+  reportId();
 }
 
 DhtNode::DhtNode() {
   initReceiver();
   deriveId();
-  initFingerTable();
+  initFingers();
 }
 
 void DhtNode::join(const std::string& fqdn, uint16_t port) {
+ // TODO write this thang 
+}
+
+void DhtNode::listen() {
  // TODO write this thang 
 }
 

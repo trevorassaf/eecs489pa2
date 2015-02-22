@@ -11,7 +11,7 @@
 #include "hash.h"
 
 #define FINGER_TABLE_SIZE 8
-#define NUM_IDS 0x10 // 2^FINGER_TABLE_SIZE
+#define NUM_IDS 0x100 // 2^FINGER_TABLE_SIZE
 #define SIZE_OF_ADDR_PORT 6
 
 class DhtNode {
@@ -36,15 +36,20 @@ class DhtNode {
     };
 
     /**
+     * Predecessor node.
+     */
+    uint8_t predecessorNodeId_;
+
+    /**
      * Finger table holding addresses of known successors.
      */
     std::vector<finger_t> fingerTable_;
 
     /**
-     * initFingerTable()
+     * initFingers()
      * - Construct and set finger table based on the node's current id.
      */
-    void initFingerTable();
+    void initFingers();
 
     /**
      * initReceiver()
@@ -64,6 +69,15 @@ class DhtNode {
      * @param unfolded_id : 16-bit id 
      */
     uint8_t foldId(uint16_t unfolded_id) const; 
+
+    /**
+     * reportId()
+     * - Notify user of id value.
+     */
+    void reportId() const;
+
+    // TODO remove!
+    void printFingers() const;
 
   public:
     /**
@@ -86,6 +100,12 @@ class DhtNode {
      * @param port : port of target
      */
     void join(const std::string& fqdn, uint16_t port);
+
+    /**
+     * listen()
+     * - Await incoming messages.
+     */
+    void listen();
 
     /**
      * resetId()
