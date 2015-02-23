@@ -21,7 +21,6 @@
 #include "SocketException.h"
 #include "netimg.h"
 #include "DhtNode.h"
-#include "Selector.h"
 
 #define SHA1_LENGTH 20 // bytes
 #define ID_LENGTH 20
@@ -86,7 +85,7 @@ void failCliWithMessage(const std::string& message) {
  * @param config : cli param configuration
  * @param type : node setting
  */
-void registerCliConfigType(cli_config_t config, NodeType type) {
+void registerCliConfigType(cli_config_t& config, NodeType type) {
   for (size_t i = 0; i < config.num_types; ++i) {
     if (config.types[i] == type) {
       failCliWithMessage("Duplicate type found.");
@@ -162,7 +161,11 @@ const cli_id_config_t deserializeId(const char* id_cstr) {
  * @param cli_params : remaining cli parameters
  * @param num_cli_params : count of remaining cli params
  */
-size_t processCliParam(cli_config_t config, const char * const * cli_params, size_t num_cli_params) {
+size_t processCliParam(
+  cli_config_t& config,
+  const char * const * cli_params,
+  size_t num_cli_params
+) {
   // Fail bc 'num_cli_params' should never be 0
   assert(num_cli_params);
 
@@ -174,7 +177,6 @@ size_t processCliParam(cli_config_t config, const char * const * cli_params, siz
   // Fail due to invalid flag token
   if (flag_token != CLI_FLAG_TOKEN) {
     failCliWithMessage(std::string("Invalid flag-token: ") + flag_token);
-    exit(1);
   }
 
   const char* flag_str = *cli_params;
@@ -185,6 +187,7 @@ size_t processCliParam(cli_config_t config, const char * const * cli_params, siz
   }
 
   char flag = *(flag_str + 1);
+
   const char* param_str = *(cli_params + 1);
   size_t num_consumed_cli_params = 0;
 
@@ -206,8 +209,6 @@ size_t processCliParam(cli_config_t config, const char * const * cli_params, siz
     default:
       failCliWithMessage(std::string("Invalid flag: ") + flag);
   }
-
-  ++config.num_types;
 
   return num_consumed_cli_params + 1;
 }
@@ -246,27 +247,35 @@ int main(int argc, char** argv) {
   bool has_targ = false;
   bool has_id = false;
 
-  for (size_t i = 0; i < MAX_NUM_FLAGS; ++i) {
-    switch (config.types[i]) {
+  for (size_t i = 0; i < config.num_types; ++i) {
+    NodeType type = config.types[i];
+    switch (type) {
       case ID_OVERRIDE:
         has_id = true;
         break;
       case TARGET:
         has_targ = true;
         break;
+      default:
+        failCliWithMessage(std::string("Invalid type: ") + std::to_string(type));
     }
   }
+
   // Initialize node w/id, if specified
   DhtNode node = (has_id) 
       ? DhtNode(config.id_config.id) 
       : DhtNode();
-
+  
   // Connect to target, if target is specified,
   if (has_targ) {
-    node.join(config.targ_config.fqdn, config.targ_config.port);  
+    node.joinNetwork(config.targ_config.fqdn, config.targ_config.port);  
   }
 
-  node.listen(); 
+  // Run node loop 
+  node.run();
+  
+  // Close node resources 
+  node.close();
 
   return 0;
 }

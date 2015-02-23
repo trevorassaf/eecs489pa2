@@ -53,23 +53,48 @@ int Connection::getFd() const {
   return fileDescriptor_;
 }
 
-const std::string Connection::read() const {
-  char buffer[BUFFER_SIZE];
-  int bytes_read = ::recv(fileDescriptor_, buffer, BUFFER_SIZE, 0);
+const std::string Connection::read(size_t buff_size) const {
+  char buff[buff_size];
+  int bytes_read = ::recv(fileDescriptor_, buff, buff_size, 0);
   if (bytes_read == -1) {
     throw SocketException("Failed to read from socket.");
   }
 
-  return std::string(buffer, bytes_read);
+  return std::string(buff, bytes_read);
 }
 
-size_t Connection::write(const std::string data) const {
+const std::string Connection::readAll(size_t n) const {
+  std::string buff;
+  while (buff.size() != n) {
+    buff += read(n - buff.size());
+  }
+
+  return buff;
+}
+
+void Connection::readAll(void* buff, size_t n) const {
+  // Read specified number of bytes from the wire 
+  std::string buff_in = readAll(n);
+
+  // Write data to output buffer
+  memcpy(buff, buff_in.c_str(), n);
+}
+
+size_t Connection::write(const std::string& data) const {
   int bytes_sent = ::send(fileDescriptor_, data.c_str(), data.size(), 0);
   if (bytes_sent == -1) {
     throw SocketException("Bad write to socket");
   }
 
   return data.size() - bytes_sent;
+}
+
+void Connection::writeAll(std::string data) const {
+  size_t remaining_bytes = data.size();
+  while (remaining_bytes) {
+    remaining_bytes = write(data);
+    data = data.substr(data.size() - remaining_bytes);
+  }
 }
 
 uint16_t Connection::getLocalPort() const {

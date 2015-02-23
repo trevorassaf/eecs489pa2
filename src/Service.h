@@ -99,7 +99,7 @@ class Service {
 
     /**
      * getIpv4()
-     * - Retur ipv4 of host.
+     * - Return ipv4 of host.
      */
     uint32_t getIpv4() const;
 

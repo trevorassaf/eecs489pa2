@@ -1,5 +1,7 @@
 #include "Service.h"
 
+#include <iostream>
+
 Service::Service(
     int file_descriptor
 ) : 
@@ -31,6 +33,8 @@ void Service::initService() {
 
   port_ = ntohs(sin.sin_port);
   ipv4_ = ntohl(sin.sin_addr.s_addr);
+
+  std::cout << "ipv4:port = " << ipv4_ << ":" << port_ << std::endl;
   
   char hostname_buff[MAXFQDN + 1];
   ::memset(hostname_buff, 0, MAXFQDN);

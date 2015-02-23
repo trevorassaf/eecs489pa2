@@ -1,6 +1,7 @@
 #include "ServerBuilder.h"
 
 ServerBuilder::ServerBuilder() :
+  hasRemoteDomainName_(false),
   localPort_(0),
   remotePort_(0),
   hasLocalPort_(false),
@@ -11,6 +12,7 @@ ServerBuilder::ServerBuilder() :
 
 ServerBuilder& ServerBuilder::setRemoteDomainName(const std::string& domain_name) {
   remoteDomainName_ = domain_name;
+  hasRemoteDomainName_ = true;
   return *this;
 }
 
@@ -42,6 +44,8 @@ ServerBuilder& ServerBuilder::disableAddressReuse() {
 }
 
 Connection ServerBuilder::build() const {
+  // Fail b/c remote was not specified
+  assert(hasRemoteIpv4Address_ || hasRemoteDomainName_);
   
   // Initialize socket
   int sd = ::socket(PF_INET, SOCK_STREAM, IPPROTO_TCP);
@@ -75,7 +79,7 @@ Connection ServerBuilder::build() const {
     }
   }
 
-  // Bind to local address
+  // Bind to local address (bind before connect pattern)
   if (hasLocalPort_) {
     struct sockaddr_in local_addr;
     size_t local_addr_len = sizeof(local_addr);
@@ -100,13 +104,10 @@ Connection ServerBuilder::build() const {
   // Identify target server by ipv4 address or domain name
   if (hasRemoteIpv4Address_) {
     server.sin_addr.s_addr = htonl(remoteIpv4Address_);  
-  } else {
-    // Must specify 'domain name' if not using ip
-    assert(!remoteDomainName_.empty());
-
+  } else if (hasRemoteDomainName_) {
     struct hostent *sp = ::gethostbyname(remoteDomainName_.c_str());
     memcpy(&server.sin_addr, sp->h_addr, sp->h_length);
-  }
+  } 
 
   // Connect to peer server
   if (::connect(sd, (struct sockaddr *) &server, size_server) == -1) {

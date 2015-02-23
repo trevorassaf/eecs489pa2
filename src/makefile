@@ -21,6 +21,7 @@ DHTDB_HEADERS = ServiceBuilder.h \
 			 hash.h \
 			 DhtNode.h \
 			 Selector.h \
+			 dht_packets.h \
 			 SocketException.h
 DHTDB_EXE = dhtdb
 
@@ -67,7 +68,7 @@ imgdb.o: ltga.h packets.h
 hash.o: hash.h netimg.h
 	$(CC) $(CXXFLAGS) -c hash.cpp
 
-DhtNode.o: DhtNode.h ServerBuilder.h ServiceBuilder.h Service.h Connection.h SocketException.h hash.h
+DhtNode.o: DhtNode.h ServerBuilder.h ServiceBuilder.h Service.h Connection.h SocketException.h hash.h dht_packets.h netimg.h Selector.h
 	$(CC) $(CXXFLAGS) -c DhtNode.cpp
 
 Selector.o: Selector.h

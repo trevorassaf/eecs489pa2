@@ -3,11 +3,7 @@
 #include <iostream>
 #include <assert.h>
 
-void Selector::listen() const {
-  listen(0);
-}
-
-void Selector::listen(time_t sec, suseconds_t usec) const {
+bool Selector::listen(time_t sec, suseconds_t usec) const {
   fd_set sd_set;
   FD_ZERO(&sd_set);
   int max_sd = 0;
@@ -31,11 +27,28 @@ void Selector::listen(time_t sec, suseconds_t usec) const {
   for (const auto& callback_binding : socketCallbacks_) {
     int sd = callback_binding.first;
     if (FD_ISSET(sd, &sd_set)) {
-      callback_binding.second(sd); 
+      bool continue_listening = callback_binding.second(sd); 
+      if (!continue_listening) {
+        return false;
+      }
     }
   }
+
+  return true;
 }
 
 void Selector::bind(int sd, socket_callback_t callback) {
   socketCallbacks_[sd] = callback; 
+}
+
+void Selector::erase(int sd) {
+  // Fail b/c/ 'sd' is unset
+  assert(socketCallbacks_.count(sd) == 1);
+ 
+  // Remove callback function for socket
+  socketCallbacks_.erase(sd);
+}
+
+void Selector::clear() {
+  socketCallbacks_.clear(); 
 }

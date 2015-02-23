@@ -24,6 +24,11 @@ class ServerBuilder {
     std::string remoteDomainName_;
 
     /**
+     * Specifies if remote domain name has been indicated.
+     */
+    bool hasRemoteDomainName_;
+
+    /**
      * Port of target server in host-byte-order.
      */
     uint16_t localPort_, remotePort_;

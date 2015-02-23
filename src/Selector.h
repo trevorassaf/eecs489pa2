@@ -6,7 +6,7 @@
 #include <map>
 #include <functional>
 
-typedef std::function<void(int sd)> socket_callback_t;
+typedef std::function<bool (int sd)> socket_callback_t;
 
 class Selector {
   
@@ -19,20 +19,28 @@ class Selector {
   public:
     /**
      * listen()
-     * - Try to read input off of the wire.
-     */
-    void listen() const;
-
-    /**
-     * listen()
      * - Wait for input for specified time.
      * @param duration : time to wait in millis
+     * @return false iff program should finish
      */
-    void listen(time_t sec=0, suseconds_t usec=0) const;
+    bool listen(time_t sec=0, suseconds_t usec=0) const;
 
     /**
      * bind()
      * - Register sd and bind callback to sd.
      */
     void bind(int sd, socket_callback_t callback);
+    
+    /**
+     * clear()
+     * - Unset specified callback function.
+     * @param sd : id for callback function 
+     */
+    void erase(int sd);
+
+    /**
+     * clear()
+     * - Unset all callback functions.
+     */
+    void clear();
 };

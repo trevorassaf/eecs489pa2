@@ -54,16 +54,40 @@ class Connection {
     /**
      * read()
      * - Read data from socket. Return data as string.
+     * @param buff_size : number of bytes to read  
      */
-    const std::string read() const;
+    const std::string read(size_t buff_size = BUFFER_SIZE) const;
+    
+    /**
+     * readAll()
+     * - Read specified number of bytes from socket. Return data as string.
+     * @param buff_size : number of bytes to read  
+     */
+    const std::string readAll(size_t n) const;
+     
+    /** 
+     * readAll()
+     * - Read specified number of bytes from socket.
+     * - Place data in provided buffer.
+     * @param buff : buffer space in which we store the data 
+     * @param buff_size : number of bytes to read  
+     */
+    void readAll(void* buff, size_t n) const;
 
     /**
      * write()
-     * - Write data to socket.
+     * - Write data fragment to socket.
      * @param data : string of data to write to socket
      * @return number of unsent chars 
      */
-    size_t write(const std::string data) const;
+    size_t write(const std::string& data) const;
+
+    /**
+     * writeAll()
+     * - Write all data to socket.
+     * @param data : string of data to write to socket
+     */
+    void writeAll(std::string data) const;
 
     /**
      * getLocalPort()
