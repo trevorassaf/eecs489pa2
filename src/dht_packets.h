@@ -33,43 +33,31 @@ enum DhtType {
 typedef struct {
   uint8_t vers; // must be DHTM_VERS
   uint8_t type; // [REDRT | JOIN | REID]
-} dhtheader_t;
+} dhtheader_t;  // 2 bytes
 
 typedef struct {            // inherit from struct sockaddr_in
-  uint8_t rsvd;  // == sizeof(sin_len)
-  uint8_t id;    // == sizeof(sin_family)
-  uint16_t port;        // port#, always stored in network byte order
+  uint8_t rsvd;        // == sizeof(sin_len)
+  uint8_t id;          // == sizeof(sin_family)
+  uint16_t port;       // port#, always stored in network byte order
   struct in_addr ipv4; // IPv4 address
-} dhtnode_t;
-
-typedef struct {
-  uint16_t ttl;     // used by JOIN only
-  dhtnode_t node;   // REDRT: new successor
-                    // JOIN: node attempting to join DHT
-} dhtmsg_body_t;
+} dhtnode_t;           // 8 bytes
 
 typedef struct {
   dhtheader_t header;
-  dhtmsg_body_t body;
-} dhtmsg_t;
+  uint16_t ttl;       // used by JOIN only
+  dhtnode_t node;     // REDRT: new successor
+                      // JOIN: node attempting to join DHT
+} dhtmsg_t;           // 12 bytes
 
 typedef struct {
-  dhtmsg_t msg;   // WLCM: successor node
-  dhtnode_t pred; // WLCM: predecessor node
+  dhtheader_t header;       // {DHTM_VERS, DHTM_WLCM}
+  uint16_t ttl;         // reserved
+  dhtnode_t successor;      // WLCM: successor node
+  dhtnode_t predecessor;      // WLCM: predecessor node 
 } dhtwlcm_t;
-
-/*
-typedef struct {
-  unsigned char dhtm_vers;  // must be DHTM_VERS
-  unsigned char dhtm_type;  // DHTM_WLCM
-  u_short dhtm_ttl;         // reserved
-  dhtnode_t dhtm_node;      // WLCM: successor node
-  dhtnode_t dhtm_pred;      // WLCM: predecessor node 
-} dhtwlcm_t;
-*/
 
 typedef struct {            // PA2
   dhtmsg_t msg;                
-  uint8_t imgID;
-  char dhts_name[NETIMG_MAXFNAME];
+  uint8_t img_id;
+  char name[NETIMG_MAXFNAME];
 } dhtsrch_t;                // used by QUERY, REPLY, and MISS

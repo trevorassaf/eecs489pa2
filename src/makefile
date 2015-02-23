@@ -39,10 +39,13 @@ else
   NETIMG_LIBS = -lGL -lGLU -lglut
 endif
 
+CRYPTO_LIBS = -lssl -lcrypto
+DHTDB_LIBS = $(CRYPTO_LIBS)
+
 all: $(DHTDB_EXE) $(NETIMG_EXE)
 
 dhtdb: $(DHTDB_OBJS) 
-	$(CC) $(LFLAGS) -o $(DHTDB_EXE) $(DHTDB_OBJS)
+	$(CC) $(LFLAGS) -o $(DHTDB_EXE) $(DHTDB_OBJS) $(DHTDB_LIBS)
 
 main.o: main.cpp $(DHTDB_HEADERS)
 	$(CC) $(CXXFLAGS) -c main.cpp

@@ -24,18 +24,7 @@ Service::Service(
 }
 
 void Service::initService() {
-  // Initialize socket information for service
-  struct sockaddr_in sin;
-  socklen_t sin_len = sizeof(sin);
-  if (::getsockname(fileDescriptor_, (struct sockaddr *) &sin, &sin_len) == -1) {
-    throw SocketException("Failed to fetch socket information in 'getsockname'");
-  }
-
-  port_ = ntohs(sin.sin_port);
-  ipv4_ = ntohl(sin.sin_addr.s_addr);
-
-  std::cout << "ipv4:port = " << ipv4_ << ":" << port_ << std::endl;
-  
+  // Fetch domain name
   char hostname_buff[MAXFQDN + 1];
   ::memset(hostname_buff, 0, MAXFQDN);
   if (::gethostname(hostname_buff, MAXFQDN) == -1) {
@@ -43,6 +32,40 @@ void Service::initService() {
   }
 
   domainName_ = std::string(hostname_buff);
+
+  // Fetch port number
+  struct sockaddr_in sin;
+  socklen_t sin_len = sizeof(sin);
+  if (::getsockname(fileDescriptor_, (struct sockaddr *) &sin, &sin_len) == -1) {
+    throw SocketException("Failed to fetch socket information in 'getsockname'");
+  }
+
+  port_ = ntohs(sin.sin_port);
+ 
+  // Fetch ipv4 address
+  struct addrinfo *servinfo;
+  int status;
+  if ((status = ::getaddrinfo(
+        domainName_.c_str(),
+        std::to_string(port_).c_str(),
+        NULL,
+        &servinfo)) != 0)
+  {
+    std::cout << "error: " << gai_strerror(status) << std::endl;
+    throw SocketException("Failed to fetch ipv4 address of service"); 
+  }
+
+  // Fail b/c couldn't find ip address
+  if (servinfo == NULL) {
+    std::cout << "p inited to null" << std::endl;
+    throw SocketException("Couldn't look up host ip addresses.");
+  }
+
+  struct sockaddr_in* ipv4addr = (struct sockaddr_in*) servinfo->ai_addr;
+  ipv4_ = ntohl(ipv4addr->sin_addr.s_addr);
+  ::freeaddrinfo(servinfo);
+
+  std::cout << "ipv: " << (int) getIpv4() << std::endl;
 }
 
 int Service::initSocket() const {

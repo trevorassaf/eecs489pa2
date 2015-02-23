@@ -1,5 +1,7 @@
 #include "Connection.h"
 
+#include <iostream>
+
 Connection::Connection(
     int file_descriptor
 ) : 
@@ -65,8 +67,11 @@ const std::string Connection::read(size_t buff_size) const {
 
 const std::string Connection::readAll(size_t n) const {
   std::string buff;
+  std::cout << "receiving " << n << " bytes" << std::endl;
   while (buff.size() != n) {
+    std::cout << "buff size (before): " << buff.size() << std::endl; 
     buff += read(n - buff.size());
+    std::cout << "buff size (after): " << buff.size() << std::endl; 
   }
 
   return buff;
@@ -91,8 +96,11 @@ size_t Connection::write(const std::string& data) const {
 
 void Connection::writeAll(std::string data) const {
   size_t remaining_bytes = data.size();
+  std::cout << "writing: " << data << std::endl;
   while (remaining_bytes) {
+    std::cout << "remaining bytes (before): " << remaining_bytes << std::endl;
     remaining_bytes = write(data);
+    std::cout << "remaining bytes (before): " << remaining_bytes << std::endl;
     data = data.substr(data.size() - remaining_bytes);
   }
 }

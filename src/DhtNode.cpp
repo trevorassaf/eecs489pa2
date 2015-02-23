@@ -167,17 +167,17 @@ void DhtNode::reportAdjacentNodes() const {
 
 void DhtNode::handleJoin(const Connection& connection) {
   // Read dhtmsg_body packet
-  dhtmsg_body_t body; 
-  size_t body_size = sizeof(body);
+  dhtmsg_t dhtmsg;
+  size_t body_size = sizeof(dhtmsg) - sizeof(dhtmsg.header);
 
-  connection.readAll((void *) &body, body_size);
+  connection.readAll((void *) &dhtmsg.ttl, body_size);
   connection.close(); 
 
   // Report that we've received a JOIN request
-  std::cout << "Received JOIN<ttl: " << (int) (body.ttl) << 
-    ", id: " << (int) body.node.id << ", port: " <<
-    (int) (body.node.port) << ", ipv4: " << 
-    (int) (body.node.ipv4.s_addr) << std::endl;
+  std::cout << "Received JOIN<ttl: " << (int) ntohs(dhtmsg.ttl) << 
+    ", id: " << (int) dhtmsg.node.id << ", port: " <<
+    (int) ntohs(dhtmsg.node.port) << ", ipv4: " << 
+    (int) ntohl(dhtmsg.node.ipv4.s_addr) << std::endl;
   /*std::cout << "Received JOIN<ttl: " << (int) ntohs(body.ttl) << 
     ", id: " << (int) body.node.id << ", port: " <<
     (int) ntohs(body.node.port) << ", ipv4: " << 
@@ -233,20 +233,19 @@ void DhtNode::joinNetwork(const std::string& fqdn, uint16_t port) {
   self.port = htons(receiver_->getPort());
   self.ipv4.s_addr = htonl(receiver_->getIpv4());
 
-  // Assemble 'body' packet
-  dhtmsg_body_t body;
-  body.ttl = htons(DHTM_TTL);
-  body.node = self;
-
-  std::cout << "Sent JOIN<ttl: " << (int) (body.ttl) << 
-    ", id: " << (int) body.node.id << ", port: " <<
-    (int) (body.node.port) << ", ipv4: " << 
-    (int) (body.node.ipv4.s_addr) << std::endl;
-
   // Assemble join message
-  dhtmsg_t dhtmsg = {header, body};
+  dhtmsg_t dhtmsg = {header, htons(DHTM_TTL), self};
   const std::string message((const char *) &dhtmsg, sizeof(dhtmsg));
 
+  std::cout << "Sent JOIN to " << fqdn << ":" << (int) port <<
+    "\n\t- ttl: " << (int) ntohs(dhtmsg.ttl) << 
+    "\n\t- id: " << (int) dhtmsg.node.id << 
+    "\n\t- port: " << (int) ntohs(dhtmsg.node.port) << 
+    "\n\t- ipv4: " << (int) ntohl(dhtmsg.node.ipv4.s_addr) << std::endl;
+
+
+  std::cout << "num bytes in join message: " << sizeof(dhtmsg) << std::endl;
+  std::cout << "num bytes in join message packet type: " << sizeof(dhtmsg_t) << std::endl;
   // Connect to DHT network through specified target
   ServerBuilder builder; 
   const Connection remote = builder
@@ -256,7 +255,6 @@ void DhtNode::joinNetwork(const std::string& fqdn, uint16_t port) {
 
   // Send join message to first network node and close connection
   try {
-    std::cout << "writing message!" << std::endl;
     remote.writeAll(message);
     remote.close();
   } catch (const SocketException& e) {
