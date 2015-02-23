@@ -25,9 +25,11 @@
 
 enum DhtType {
   JOIN = 0x08,
+  JOIN_ATLOC = (DHTM_ATLOC | JOIN),
   REDRT = 0x40,
   REID = 0x0c,
-  WLCM = 0x04
+  WLCM = 0x04,
+  SRCH = 0x10
 };
 
 typedef struct {
@@ -39,7 +41,7 @@ typedef struct {            // inherit from struct sockaddr_in
   uint8_t rsvd;        // == sizeof(sin_len)
   uint8_t id;          // == sizeof(sin_family)
   uint16_t port;       // port#, always stored in network byte order
-  struct in_addr ipv4; // IPv4 address
+  uint32_t ipv4;       // IPv4 address
 } dhtnode_t;           // 8 bytes
 
 typedef struct {
@@ -50,9 +52,7 @@ typedef struct {
 } dhtmsg_t;           // 12 bytes
 
 typedef struct {
-  dhtheader_t header;       // {DHTM_VERS, DHTM_WLCM}
-  uint16_t ttl;         // reserved
-  dhtnode_t successor;      // WLCM: successor node
+  dhtmsg_t msg;
   dhtnode_t predecessor;      // WLCM: predecessor node 
 } dhtwlcm_t;
 

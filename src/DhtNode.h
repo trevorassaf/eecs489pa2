@@ -10,10 +10,18 @@
 #include "Connection.h"
 #include "hash.h"
 #include "Selector.h"
+#include "dht_packets.h"
 
 #define FINGER_TABLE_SIZE 8
 #define NUM_IDS 0x100 // 2^FINGER_TABLE_SIZE
 #define SIZE_OF_ADDR_PORT 6
+
+// DhtType Strings
+#define JOIN_STR "JOIN"
+#define REDRT_STR "REDRT"
+#define REID_STR "REID"
+#define WLCM_STR "WLCM"
+#define SRCH_STR "SRCH"
 
 class DhtNode {
 
@@ -37,14 +45,23 @@ class DhtNode {
     };
 
     /**
-     * Predecessor node.
-     */
-    uint8_t predecessorNodeId_;
-
-    /**
      * Finger table holding addresses of known successors.
      */
     std::vector<finger_t> fingerTable_;
+  
+    /**
+     * Predecessor data stored in host-byte-order.
+     */
+    struct predecessor_t {
+      uint8_t node_id;
+      uint8_t port;
+      uint32_t ipv4;
+    };
+
+    /**
+     * Predecessor node.
+     */
+    predecessor_t predecessor_;
 
     /**
      * initFingers()
@@ -105,28 +122,136 @@ class DhtNode {
     void reportAdjacentNodes() const;
 
     /**
-     * handleJoin()
+     * handleJoinAndCloseCxn()
      * - Read and process join message request
+     * @param msg : packet from the network (network-byte-order)
+     * @param connection : connection to requesting node
      */
-    void handleJoin(const Connection& connection);
-    
+    void handleJoinAndCloseCxn(const dhtmsg_t& msg, const Connection& connection);
+
+    /**
+     * handleJoinCollision()
+     * - Join request collided -- instruct remote to regenerate its id.
+     * @param msg : join request
+     */
+    void handleJoinCollision(const dhtmsg_t& join_msg);
+
+    /**
+     * handleJoinAcceptance()
+     * - Accept join request by making the requesting remote our
+     *   new predecessor.
+     * @param join_msg : join request
+     */
+    void handleJoinAcceptance(const dhtmsg_t& join_msg);
+
+    /**
+     * handleUnexpectedJoinFailure()
+     * - Handle join failure that occurred contrary to 
+     *   sender's expectations.
+     * @param join_msg : join message
+     * @param dead_cxn : closed connection with sender
+     */
+    void handleUnexpectedJoinFailure(
+        const dhtmsg_t& join_msg, 
+        const Connection& dead_cxn
+    ) const;
+
+    /**
+     * forwardJoin()
+     * - Forward join message to best finger.
+     * @param join_msg : join message payload 
+     */
+    void forwardJoin(const dhtmsg_t& join_msg) const;
+
+    /**
+     * reloadDb()
+     * - Reload images in db to reflect the current identifer interval.
+     */
+    void reloadDb();
+
     /**
      * handleRedrt()
      * - Read and process join message request
+     * @param msg : packet from the network (network-byte-order)
+     * @param connection : connection to requesting node
      */
-    void handleRedrt(const Connection& connection);
-    
+    void handleRedrt(const dhtmsg_t& msg, const Connection& connection);
+
     /**
      * handleReid()
      * - Read and process join message request
+     * @param msg : packet from the network (network-byte-order)
+     * @param connection : connection to requesting node
      */
-    void handleReid(const Connection& connection);
-    
+    void handleReid(const dhtmsg_t& msg, const Connection& connection);
+
     /**
-     * handleWlcm()
+     * handleWlcmAndCloseCxn()
      * - Read and process join message request
+     * @param msg : packet from the network (network-byte-order)
+     * @param connection : connection to requesting node
      */
-    void handleWlcm(const Connection& connection);
+    void handleWlcmAndCloseCxn(const dhtmsg_t& msg, const Connection& connection);
+
+    /**
+     * handleSrch()
+     * - Read and process join message request
+     * @param msg : packet from the network (network-byte-order)
+     * @param connection : connection to requesting node
+     */
+    void handleSrch(const dhtmsg_t& msg, const Connection& connection);
+
+    /**
+     * doesJoinCollide()
+     * - Test if the id of the joining node collides with the
+     *   id of the current node or that of its predecessor.
+     * @param join_msg : join message 
+     */
+    bool doesJoinCollide(const dhtmsg_t& join_msg) const;
+
+    /**
+     * canJoin()
+     * - Test if the id of the joining node falls in the range between
+     *   the current node and its predecessor.
+     * @param join_msg : join message 
+     */
+    bool canJoin(const dhtmsg_t& join_msg) const;
+
+    /**
+     * senderExpectedJoin()
+     * - Test if sender expected this join to succeed.
+     * @param join_msg : join message
+     */
+    bool senderExpectedJoin(const dhtmsg_t& join_msg) const;
+
+    /**
+     * reportDhtMsg()
+     * - Report dht message packet received.
+     * @param dhtmsg : dht message packet
+     * @param connection : connection to sending node
+     */
+    void reportDhtMsg(const dhtmsg_t& dhtmsg, const Connection& connection) const;
+   
+    /**
+     * getDhtTypeStriing()
+     * - Return string representation of dht type.
+     * @param type : type of dhtmsg 
+     */
+    std::string getDhtTypeString(DhtType type) const;
+
+    /**
+     * fixUp()
+     * - Fix up the finger table.
+     * @param  
+     */
+    void fixUp(size_t idx);
+
+    /**
+     * fixDown()
+     * - Fix down the finger table.
+     * @param  
+     */
+    void fixDown(size_t idx);
 
     // TODO remove!
     void printFingers() const;
