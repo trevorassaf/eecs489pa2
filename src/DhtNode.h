@@ -227,9 +227,9 @@ class DhtNode {
      * inSuccessorsPurview()
      * - Test if the id of the joining node falls in the range between
      *   use and our sucessor.
-     * @param join_msg : join message 
+     * @param object_id : id of object we're trying to place 
      */
-    bool inSuccessorsPurview(const dhtmsg_t& join_msg) const;
+    bool inSuccessorsPurview(uint8_t object_id) const;
 
     /**
      * senderExpectedJoin()
@@ -296,20 +296,13 @@ class DhtNode {
     size_t findFingerForForwarding(uint8_t object_id) const;
 
     /**
-     * forwardJoinToSuccessor()
-     * - Send join to successor. Indicate that we expect the join to
-     *   succeed by setting the type to JOIN_ATLOC.
-     * @param join_pkt : join message
+     * expectToFindObject()
+     * - Return true b/c the object-id is between the finger's fID
+     *   and finger id value.
+     * @param object_id : id of object
+     * @param finger : finger we're forwarding the object to
      */
-    void forwardJoinToSuccessor(dhtmsg_t join_pkt);
-
-    /**
-     * forwardJoinToFinger()
-     * - Send join request to provided finger. Type must be JOIN, not JOIN_ATLOC.
-     * @param join_pkt : join request
-     * @param finger : finger to forward the request to
-     */
-    void forwardJoinToFinger(dhtmsg_t join_pkt, const finger_t& finger) const;
+    bool expectToFindObject(uint8_t object_id, const finger_t& finger) const;
 
     /**
      * stringifyIpv4()
