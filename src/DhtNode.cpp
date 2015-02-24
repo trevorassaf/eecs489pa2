@@ -246,6 +246,16 @@ void DhtNode::handleDhtTraffic() {
     case WLCM:
       handleWlcmAndCloseCxn(message, connection);
       return;
+    case SRCH:
+    case SRCH_ATLOC:
+      handleSrchAndCloseCxn(message, connection);
+      return;
+    case RPLY:
+      handleRplyAndCloseCxn(message, connection);
+      return;
+    case MISS:
+      handleMissAndCloseCxn(message, connection);
+      return;
   }
  
   // Subsequent ops don't neet the connection, so close it.
@@ -382,18 +392,28 @@ void DhtNode::forwardInitialImageQuery(const std::string& file_name) {
   unsigned char md[SHA1_MDLEN];
   SHA1((unsigned char *) file_name.c_str(), file_name.size(), md);
 
-  srch_pkt.img_id = static_cast<uint8_t>(ID(md)); 
-  memset(srch_pkt.name, 0, DHT_MAX_FILE_NAME);
-  memcpy(srch_pkt.name, file_name.c_str(), file_name.size());
+  srch_pkt.img.id = static_cast<uint8_t>(ID(md)); 
+  memset(srch_pkt.img.name, 0, DHT_MAX_FILE_NAME);
+  memcpy(srch_pkt.img.name, file_name.c_str(), file_name.size());
 
   // Forward search packet to network
-  forwardImageQuery(srch_pkt);
+  forwardImageQueryWithoutTtl(srch_pkt);
 }
 
-void DhtNode::forwardImageQuery(dhtsrch_t& srch_pkt) {
+void DhtNode::forwardImageQuery(const dhtsrch_t& srch_pkt) {
+  // Kill search request if ttl has expired
+  if (srch_pkt.msg.ttl == 1) {
+    // Report that we've dropped the search request
+    std::cout << "- Dropped search request b/c ttl is now 0!" << std::endl;
+  } else {
+    forwardImageQueryWithoutTtl(srch_pkt);
+  }
+}
+
+void DhtNode::forwardImageQueryWithoutTtl(dhtsrch_t srch_pkt) {
   
   // Select finger to forward the search to
-  size_t finger_idx = findFingerForForwarding(srch_pkt.img_id);
+  size_t finger_idx = findFingerForForwarding(srch_pkt.img.id);
   
   // Fail b/c finger idx is out of bounds
   assert(finger_idx < fingerTable_.size() - 1);
@@ -409,7 +429,7 @@ void DhtNode::forwardImageQuery(dhtsrch_t& srch_pkt) {
   
   // Set ATLOC bit, if we expect to find the object at the finger that 
   // we're forwarding the image query to
-  srch_pkt.msg.header.type = (expectToFindObject(srch_pkt.img_id, target_finger))
+  srch_pkt.msg.header.type = (expectToFindObject(srch_pkt.img.id, target_finger))
       ? SRCH_ATLOC
       : SRCH;
   
@@ -633,8 +653,14 @@ void DhtNode::handleJoinAndCloseCxn(
       std::cout << "\t- Sender DID NOT expect to join with us."
         << std::endl;
 
-      // Forward join request to next best node
-      forwardJoin(join_msg);
+      // Kill join request if ttl has run out
+      if (join_msg.ttl == 1) {
+        // Report that we've dropped the join request
+        std::cout << "- Dropped join request b/c ttl is now 0!" << std::endl;
+      } else {
+        // Forward join request to next best node
+        forwardJoin(join_msg);
+      }
     }
   }
 }
@@ -772,12 +798,6 @@ void DhtNode::handleUnexpectedJoinFailureAndClose(
 }
 
 void DhtNode::forwardJoin(dhtmsg_t join_msg) {
-  // Kill join request if ttl has run out
-  if (--join_msg.ttl == 0) {
-    // Report that we've dropped the join request
-    std::cout << "- Dropped join request b/c ttl is now 0!" << std::endl;
-    return;
-  }
 
   // Select finger to forward the join to
   size_t finger_idx = findFingerForForwarding(join_msg.node.id);
@@ -847,32 +867,13 @@ void DhtNode::forwardJoin(dhtmsg_t join_msg) {
   }
 }
 
-void DhtNode::reloadDb() {
-  const finger_t& predecessor = getPredecessor();
-  imageDb_->load(predecessor.node_id, id_);
-}
-
-void DhtNode::handleSrchRedrt(
-  const dhtmsg_t& redrt_pkt,
-  const dhtsrch_t& srch_pkt,
-  size_t finger_idx
-) {
-
-}
-
-void DhtNode::handleJoinRedrt(
-  const dhtmsg_t& redrt_pkt,
-  const dhtmsg_t& join_pkt,
-  size_t finger_idx
-) {
+void DhtNode::handleRedrt(const dhtmsg_t& redrt_pkt, size_t finger_idx) {
+ 
   // Fail b/c 'finger_idx' is out of bounds
   assert(finger_idx < fingerTable_.size() - 1);
 
   // Fail b/c header of redrt-packet is not REDRT
   assert(redrt_pkt.header.type == REDRT);
-
-  // Fail b/c header of join-packet is not JOIN_ATLOC
-  assert(join_pkt.header.type == JOIN_ATLOC);
   
   // Report REDRT packet received
   std::cout << "\t- Received REDRT packet providing new finger[" << finger_idx << ": " <<
@@ -908,7 +909,39 @@ void DhtNode::handleJoinRedrt(
   if (finger_idx != 0) {
     fixDown(finger_idx);
   }
+}
 
+void DhtNode::reloadDb() {
+  const finger_t& predecessor = getPredecessor();
+  imageDb_->load(predecessor.node_id, id_);
+}
+
+void DhtNode::handleSrchRedrt(
+  const dhtmsg_t& redrt_pkt,
+  const dhtsrch_t& srch_pkt,
+  size_t finger_idx
+) {
+  // Fail b/c header of join-packet is not SRCH_ATLOC
+  assert(srch_pkt.msg.header.type == SRCH_ATLOC);
+
+  // Update finger table 
+  handleRedrt(redrt_pkt, finger_idx);
+
+  // Forward search packet to the DHT
+  forwardImageQueryWithoutTtl(srch_pkt);
+}
+
+void DhtNode::handleJoinRedrt(
+  const dhtmsg_t& redrt_pkt,
+  const dhtmsg_t& join_pkt,
+  size_t finger_idx
+) {
+  // Fail b/c header of join-packet is not JOIN_ATLOC
+  assert(join_pkt.header.type == JOIN_ATLOC);
+
+  // Update finger table 
+  handleRedrt(redrt_pkt, finger_idx);
+  
   // Forward join back to network
   forwardJoin(join_pkt);
 }
@@ -934,6 +967,22 @@ void DhtNode::handleReid() {
   // Retry join
   sendJoinRequest();
 }
+
+void DhtNode::handleSrchAndCloseCxn(
+  const dhtmsg_t& msg,
+  const Connection& connection
+) {}
+
+void DhtNode::handleRplyAndCloseCxn(
+  const dhtmsg_t& msg,
+  const Connection& connection
+) {}
+
+void DhtNode::handleMissAndCloseCxn(
+  const dhtmsg_t& msg,
+  const Connection& connection
+) {}
+
 
 void DhtNode::handleWlcmAndCloseCxn(
   const dhtmsg_t& msg,

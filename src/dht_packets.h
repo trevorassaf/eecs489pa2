@@ -31,7 +31,9 @@ enum DhtType {
   REID = 0x0c,
   WLCM = 0x04,
   SRCH = 0x10,
-  SRCH_ATLOC = (DHTM_ATLOC | SRCH)
+  SRCH_ATLOC = (DHTM_ATLOC | SRCH),
+  RPLY = 0x20,
+  MISS = 0x22
 };
 
 typedef struct {
@@ -58,8 +60,12 @@ typedef struct {
   dhtnode_t predecessor;      // WLCM: predecessor node 
 } dhtwlcm_t;
 
+typedef struct {
+  uint8_t id;
+  char name[DHT_MAX_FILE_NAME];
+} dhtimg_t;
+
 typedef struct {            // PA2
   dhtmsg_t msg;                
-  uint8_t img_id;
-  char name[DHT_MAX_FILE_NAME];
+  dhtimg_t img;
 } dhtsrch_t;                // used by QUERY, REPLY, and MISS

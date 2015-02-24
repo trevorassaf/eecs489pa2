@@ -252,6 +252,34 @@ class DhtNode {
      *   have been instructed to generate a new ID and reconnect.
      */
     void handleReid();
+    
+    /**
+     * handleSrchAndCloseCxn()
+     * - Read the remainder of the dhtsrch_t packet off of the wire and 
+     *   try to service image query. If image exists in db, then return
+     *   to querying node. If not, forward the query to the dht.
+     * @param msg : packet from the network (network-byte-order)
+     * @param connection : connection to requesting node
+     */
+    void handleSrchAndCloseCxn(const dhtmsg_t& msg, const Connection& connection);
+
+    /**
+     * handleRplyAndCloseCxn()
+     * - Read the remainder of the dhtsrch_t packet off of the wire and then
+     *   stream the image back to the netimg client.
+     * @param msg : packet from the network (network-byte-order)
+     * @param connection : connection to requesting node
+     */
+    void handleRplyAndCloseCxn(const dhtmsg_t& msg, const Connection& connection);
+
+    /**
+     * handleMissAndCloseCxn()
+     * - Read the remainder of the dhtsrch_t packet off of the wire
+     *   and notify the netimg client that the search failed.
+     * @param msg : packet from the network (network-byte-order)
+     * @param connection : connection to requesting node
+     */
+    void handleMissAndCloseCxn(const dhtmsg_t& msg, const Connection& connection);
 
     /**
      * handleWlcmAndCloseCxn()
@@ -400,11 +428,18 @@ class DhtNode {
     /**
      * forwardImageQueryToDht()
      * - Send image query along fingers in dht. May be used for either
-     *   initial forward or secondary forwards.
+     *   initial forward or secondary forwards. Drop if ttl is too low.
      * @param srch_pkt : packet containing search query 
      */
-    void forwardImageQuery(dhtsrch_t& srch_pkt);
-
+    void forwardImageQuery(const dhtsrch_t& srch_pkt);
+    
+    /**
+     * forwardImageQueryWithoutTtl()
+     * - Send image query along fingers in dht. May be used for either
+     *   initial forward or secondary forwards. Don't drop if ttl is too low.
+     * @param srch_pkt : packet containing search query 
+     */
+    void forwardImageQueryWithoutTtl(dhtsrch_t srch_pkt);
 
     // TODO remove!
     void printFingers() const;
