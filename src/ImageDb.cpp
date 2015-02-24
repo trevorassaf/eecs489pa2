@@ -79,9 +79,50 @@ void ImageDb::storeImage(
 }
 
 void ImageDb::cacheImage(const std::string& file_name) {
-  
+  // Report that we're trying to cache the image
+  std::cout << "\t- Attempting to caching image!" << std::endl;
+ 
+  // Compute SHA1 hash and id of image name
+  unsigned char md[SHA1_MDLEN];
+  SHA1((unsigned char *) file_name.c_str(), file_name.size(), md);
+  uint8_t id = static_cast<uint8_t>(ID(md));
+
+  // Insert into db, if there's room
+  if (numImages_ != MAX_DB_SIZE) {
+    storeImage(id, md, file_name);
+  } else {
+    std::cout << "\t- Couldn't cache image because db is full!" << std::endl;
+  }
 }
 
 QueryResult ImageDb::query(const std::string& file_name) const {
-  return QUERY_SUCCESS;
+  
+  // Compute SHA1 and id
+  unsigned char md[SHA1_MDLEN];
+  SHA1((unsigned char *) file_name.c_str(), file_name.size(), md);
+  uint8_t id = ID(md);
+  
+  if (!ID_inrange(id, idRange_.start, idRange_.end)) {
+    return QUERY_FAILURE; 
+  }
+
+  if (!((bloomFilter_ & (1L << (int) bfIDX(BFIDX1, md))) &&
+      (bloomFilter_ & (1L << (int) bfIDX(BFIDX2, md))) &&
+      (bloomFilter_ & (1L << (int) bfIDX(BFIDX3, md)))))
+  { 
+    return QUERY_FAILURE;
+  }
+
+  
+  /* To get here means that you've got a hit at the Bloom Filter.
+   * Search the DB for a match to BOTH the image ID and name.
+  */
+  for (size_t i = 0; i < numImages_; ++i) {
+    const image_t& image = images_[i];
+    if (id == image.id && file_name == image.name) {
+      return QUERY_SUCCESS;
+    }
+  }
+
+  return BLOOM_FILTER_MISS; 
 }

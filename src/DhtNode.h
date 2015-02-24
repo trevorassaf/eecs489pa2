@@ -149,9 +149,8 @@ class DhtNode {
      * handleLocalQuerySuccess()
      * - Found image in local db. Stream down to client.
      * @param file_name : name of file to search for
-     * @param cxn : connection to querying netimg client
      */
-    void handleLocalQuerySuccess(const std::string& file_name, const Connection* cxn);
+    void handleLocalQuerySuccess(const std::string& file_name);
 
     /**
      * reportCliInstructions()
@@ -188,16 +187,16 @@ class DhtNode {
      */
     void handleJoinAcceptance(const dhtmsg_t& join_msg);
 
+    void sendImageNotFound();
+
     /**
-     * handleUnexpectedJoinFailureAndClose()
-     * - Handle join failure that occurred contrary to 
+     * sendRedrt()
+     * - Handle atloc failure that occurred contrary to 
      *   sender's expectations.
      * @param join_msg : join message
      * @param dead_cxn : closed connection with sender
      */
-    void handleUnexpectedJoinFailureAndClose(
-        const dhtmsg_t& join_msg, 
-        const Connection& dead_cxn);
+    void sendRedrt(const Connection& dead_cxn);
 
     /**
      * forwardJoin()
@@ -245,6 +244,14 @@ class DhtNode {
         const dhtmsg_t& redrt_pkt,
         const dhtsrch_t& srch_pkt,
         size_t finger_idx);
+
+    /**
+     * handleRemoteImageQuerySuccess()
+     * - Found imaage at remote finger. Now we need to notify the
+     *   original dht image proxy.
+     * @param srch_pkt : search packet 
+     */
+    void handleRemoteImageQuerySuccess(const dhtsrch_t& srch_pkt);
 
     /**
      * handleReid()
@@ -308,10 +315,10 @@ class DhtNode {
 
     /**
      * inOurPurview()
-     * - Test if the id of the joining node falls in our range.
-     * @param join_msg : join message 
+     * - Test if the id of the object falls in our range.
+     * @param id : id of object 
      */
-    bool inOurPurview(const dhtmsg_t& join_msg) const;
+    bool inOurPurview(uint8_t id) const;
     
     /**
      * inSuccessorsPurview()
@@ -327,6 +334,13 @@ class DhtNode {
      * @param join_msg : join message
      */
     bool senderExpectedJoin(const dhtmsg_t& join_msg) const;
+
+    /**
+     * senderExpectedSearchSuccess()
+     * - Test if sender expected the search query to succeed.
+     * @param pkt : search packet
+     */
+    bool senderExpectedSearchSuccess(const dhtsrch_t& pkt) const;
 
     /**
      * reportDhtMsgReceived()
@@ -432,6 +446,13 @@ class DhtNode {
      * @param srch_pkt : packet containing search query 
      */
     void forwardImageQuery(const dhtsrch_t& srch_pkt);
+
+    /**
+     * returnNotFoundToImageProxy()
+     * - Image doesn't exist in DHT, so send a NFOUND packet to image proxy.
+     * @param srch_pkt : search packet
+     */
+    void returnNotFoundToImageProxy(const dhtsrch_t& srch_pkt);
     
     /**
      * forwardImageQueryWithoutTtl()

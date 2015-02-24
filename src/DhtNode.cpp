@@ -311,7 +311,7 @@ void DhtNode::handleImageTraffic() {
   
   // Report that we're processing image traffic
   std::cout << "Netimg request received! Procesing image traffic from <" << 
-      cxn->getRemoteIpv4() << ":" << cxn->getRemotePort() << ">" << std::endl;
+      cxn->getRemoteDomainName() << ":" << cxn->getRemotePort() << ">" << std::endl;
 
   // Read message from netimg client
   iqry_t message;
@@ -328,6 +328,10 @@ void DhtNode::handleImageTraffic() {
 
   // Block other requests until this one is finished
   servicingImageQuery_ = true;
+  
+  // Cache connection so that we can send back to the netimg client
+  // when we find the image
+  imageClient_ = cxn;
 
   // Query local db for the requested image
   const std::string file_name(message.name);
@@ -338,7 +342,7 @@ void DhtNode::handleImageTraffic() {
     case QUERY_SUCCESS:
       // Report image found locally
       std::cout << "\t- Image found locally!" << std::endl;
-      handleLocalQuerySuccess(file_name, cxn);
+      handleLocalQuerySuccess(file_name);
       return;
 
     //// IMAGE IS NOT LOCAL -> QUERY DHT  -> FORWARD TO CLIENT ////
@@ -355,13 +359,45 @@ void DhtNode::handleImageTraffic() {
       std::cout << "Invalid QueryResult type" << std::endl;
       exit(1);
   }
-  
-  // Cache connection so that we can send back to the netimg client
-  // when we find the image
-  imageClient_ = cxn;
 
-  // Forward packet to dht
-  forwardInitialImageQuery(file_name);   
+  unsigned char md[SHA1_MDLEN];
+
+  SHA1((unsigned char *) file_name.c_str(), file_name.size(), md);
+  uint8_t id = static_cast<uint8_t>(ID(md));
+  if (inOurPurview(id)) {
+    // Report that we're squashing the request, b/c we should have it, but we don't
+    std::cout << "\t- Query unseccessful! Image-ID is in our purview, but we don't have it..." << std::endl;
+    
+    // Send image not found payload to netimg client
+    sendImageNotFound();
+
+  } else {
+    // Forward packet to dht
+    forwardInitialImageQuery(file_name);   
+  }
+}
+
+void DhtNode::sendImageNotFound() {
+
+  // Assemble imsg_t packet
+  imsg_t imsg_pkt;  
+  imsg_pkt.header = {NETIMG_VERS, NETIMG_RPY};
+  imsg_pkt.im_found = NFOUND;
+
+  std::string message((char *) &imsg_pkt, sizeof(imsg_pkt));
+
+  // Fail b/c we should be in the 'servicing image query' state
+  assert(servicingImageQuery_);
+  assert(imageClient_);
+
+  // Send message and close connection to netimg client
+  imageClient_->writeAll(message);
+  imageClient_->close();
+  delete imageClient_;
+  imageClient_ = nullptr;
+
+  servicingImageQuery_ = false;
+   
 }
 
 void DhtNode::forwardInitialImageQuery(const std::string& file_name) {
@@ -481,33 +517,36 @@ void DhtNode::forwardImageQueryWithoutTtl(dhtsrch_t srch_pkt) {
   }
 }
 
-void DhtNode::handleLocalQuerySuccess(
-  const std::string& file_name,
-  const Connection* cxn
-) {
- 
+void DhtNode::handleLocalQuerySuccess(const std::string& file_name) {
+
+  // Fail b/c we don't have a valid connection to the netimg client
+  assert(imageClient_);
+
   // Report that we're sending the image down to the client
   std::cout << "\t- Streaming image down to client!" << std::endl;
 
   // Load image into memory
-  LTGA ltga(file_name);
+  LTGA ltga(IMAGE_FOLDER + file_name);
 
   // Assemble imsg_t packet, then serialize
   imsg_t message;
-  message.header = {NETIMG_VERS, FOUND};
+  message.header = {NETIMG_VERS, NETIMG_RPY};
+  message.im_found = FOUND;
+
   size_t image_size = (size_t) loadImsgPacket(ltga, message);
   
   std::string message_str( (char *) &message, sizeof(message));
  
   // Send image meta data to netimg client
-  cxn->writeAll(message_str);
+  imageClient_->writeAll(message_str);
 
   // Assemble image pixel payload and send to client
   std::string image_str( (char *) ltga.GetPixels(), image_size);
 
-  cxn->writeAll(image_str);
-  cxn->close();
-  delete cxn;
+  imageClient_->writeAll(image_str);
+  imageClient_->close();
+  delete imageClient_;
+  imageClient_ = nullptr;
 
   // Make this node available to service other image queries
   servicingImageQuery_ = false;
@@ -610,7 +649,7 @@ void DhtNode::handleJoinAndCloseCxn(
     // Notify requesting node of id collision
     handleJoinCollision(join_msg);
 
-  } else if (inOurPurview(join_msg)) {
+  } else if (inOurPurview(join_msg.node.id)) {
     // Close connection to sender, we're going to reconnect
     // to join initiator and send along a WLCM message
     cxn.close();
@@ -642,7 +681,8 @@ void DhtNode::handleJoinAndCloseCxn(
 
       // Inform sender that the join failed, even though the sender
       // expected the join to succeed
-      handleUnexpectedJoinFailureAndClose(join_msg, cxn);
+      sendRedrt(cxn);
+      cxn.close();
 
     } else {
       // Close connection to sender b/c we're going to forward the join
@@ -764,10 +804,8 @@ void DhtNode::handleJoinAcceptance(const dhtmsg_t& join_msg) {
   reloadDb();
 }
 
-void DhtNode::handleUnexpectedJoinFailureAndClose(
-  const dhtmsg_t& join_msg,
-  const Connection& cxn
-) {
+void DhtNode::sendRedrt(const Connection& cxn) {
+  
   // Assemble REDRT packet
   dhtmsg_t redrt_msg;
   redrt_msg.header = {DHTM_VERS, REDRT};
@@ -787,7 +825,6 @@ void DhtNode::handleUnexpectedJoinFailureAndClose(
   std::string redrt_str((char *) &redrt_msg, sizeof(redrt_msg));
 
   cxn.writeAll(redrt_str);
-  cxn.close();
 
   // Report unexpected join failure
   std::cout << "\t- Sending REDRT packet to " << cxn.getRemoteDomainName() << ":"
@@ -971,17 +1008,128 @@ void DhtNode::handleReid() {
 void DhtNode::handleSrchAndCloseCxn(
   const dhtmsg_t& msg,
   const Connection& connection
-) {}
+) {
+
+  // Read remainder of search packet
+  dhtsrch_t srch_pkt;
+  
+  connection.readAll((void *) &srch_pkt.img, sizeof(dhtimg_t));
+ 
+  // Report that we've received an image query from the network
+  std::cout << "\t- Received SRCH packet from DHT network.\n" << 
+      "\t- Checking local db... " << std::endl;
+
+  // Query local db for requested image
+  const std::string file_name(srch_pkt.img.name);
+  QueryResult result = imageDb_->query(file_name);
+  
+  switch (result) {
+    //// IMAGE IS LOCAL -> FORWARD TO DHT PROXY ////
+    case QUERY_SUCCESS:
+      // Report image found locally
+      std::cout << "\t- Image found locally!" << std::endl;
+      handleRemoteImageQuerySuccess(srch_pkt);
+      connection.close();
+      return;
+
+    //// IMAGE IS NOT LOCAL -> FORWARD TO DHT OR SQUASH ////
+    case BLOOM_FILTER_MISS:
+      // Report bloom filter miss
+      std::cout << "\t- Image NOT found locally -- bloom filter false positive!" << std::endl;
+      break;
+
+    case QUERY_FAILURE:
+      std::cout << "\t- Image NOT found locally -- not in bloom filter" << std::endl;
+      break;
+
+    default:
+      std::cout << "Invalid QueryResult type" << std::endl;
+      exit(1);
+  }
+
+  if (inOurPurview(srch_pkt.img.id)) {
+    // Close connection, b/c we're done with it
+    connection.close();
+    
+    // The image doesn't exist, notify dht image proxy 
+    returnNotFoundToImageProxy(srch_pkt);
+
+  } else if (senderExpectedSearchSuccess(srch_pkt)) {
+    // Reply to sender with REDRT message 
+    sendRedrt(connection); 
+    
+    // Close connection, b/c we're done with it (after we send redrt to sender)
+    connection.close();
+
+  } else {
+    // Close connection, b/c we're done with it
+    connection.close();
+    // Forward along DHT network
+    forwardImageQuery(srch_pkt);
+  }
+}
+
+void DhtNode::handleRemoteImageQuerySuccess(const dhtsrch_t& srch_pkt) {
+ 
+  // Report that we're notifying the dht image proxy that we've found
+  // the image
+  std::cout << "\t- Returning image to DHT image proxy..." << std::endl;
+
+  // Assemble packet indicating 'image-found'
+  dhtsrch_t image_found_pkt;
+  image_found_pkt.msg.header = {DHTM_VERS, RPLY};
+
+  std::string payload( (char *) &image_found_pkt, sizeof(image_found_pkt));
+
+  ServerBuilder builder;
+  Connection cxn = builder
+    .setRemotePort(ntohs(srch_pkt.msg.node.port))
+    .setRemoteIpv4Address(ntohl(srch_pkt.msg.node.ipv4))
+    .build();
+
+  cxn.writeAll(payload);
+  cxn.close();
+}
 
 void DhtNode::handleRplyAndCloseCxn(
   const dhtmsg_t& msg,
   const Connection& connection
-) {}
+) {
+  // Read remainder of search packet
+  dhtsrch_t srch_pkt;
+  
+  connection.readAll((void *) &srch_pkt.img, sizeof(dhtimg_t));
+  connection.close();
+
+  // Report that we've received a RPLY message
+  std::cout << "\t- Received RPLY from DHT network. The image exists!" << std::endl;
+
+  // Cache image
+  imageDb_->cacheImage(srch_pkt.img.name); 
+
+  // Stream image to client (puts us back in proper state)
+  handleLocalQuerySuccess(srch_pkt.img.name);
+}
 
 void DhtNode::handleMissAndCloseCxn(
   const dhtmsg_t& msg,
   const Connection& connection
-) {}
+) {
+  // Read remainder of search packet and close ASAP
+  dhtsrch_t srch_pkt;
+  
+  connection.readAll((void *) &srch_pkt.img, sizeof(dhtimg_t));
+  connection.close();
+  
+  // Report that we're sending "image not found" message to the
+  // querying netimg client
+  std::cout << "\t- Received MISS from DHT network. Looks like the image could not be found..." 
+      << " Notifying netimg client..." << std::endl;
+
+
+  // Send image-not-found response to netimg
+  sendImageNotFound();
+}
 
 
 void DhtNode::handleWlcmAndCloseCxn(
@@ -1036,8 +1184,8 @@ bool DhtNode::doesJoinCollide(const dhtmsg_t& join_msg) const {
   return getPredecessor().node_id == join_msg.node.id || id_ == join_msg.node.id;  
 }
 
-bool DhtNode::inOurPurview(const dhtmsg_t& join_msg) const {
-  return ID_inrange(join_msg.node.id, getPredecessor().node_id, id_);
+bool DhtNode::inOurPurview(uint8_t id) const {
+  return ID_inrange(id, getPredecessor().node_id, id_);
 }
 
 bool DhtNode::inSuccessorsPurview(uint8_t object_id) const {
@@ -1047,6 +1195,32 @@ bool DhtNode::inSuccessorsPurview(uint8_t object_id) const {
 
 bool DhtNode::senderExpectedJoin(const dhtmsg_t& join_msg) const {
   return JOIN_ATLOC == join_msg.header.type;
+}
+
+bool DhtNode::senderExpectedSearchSuccess(const dhtsrch_t& pkt) const {
+  return SRCH_ATLOC == pkt.msg.header.type;
+}
+
+void DhtNode::returnNotFoundToImageProxy(const dhtsrch_t& srch_pkt) {
+  // Assemble 'not found' packet    
+  dhtsrch_t nf_pkt;
+  nf_pkt.msg.header = {DHTM_VERS, MISS};
+  
+  std::string payload( (char *) &nf_pkt, sizeof(nf_pkt));
+
+  // Report that we're sending a NFOUND back to the image 
+  std::cout << "\t- Couldn't find image in DHT, sending NFOUND to image proxy..." << std::endl;
+
+  // Connect to dht image proxy
+  ServerBuilder builder;
+  Connection cxn = builder
+    .setRemotePort(ntohs(srch_pkt.msg.node.port))
+    .setRemoteIpv4Address(ntohl(srch_pkt.msg.node.ipv4))
+    .build();
+
+  // Send NFOUND payload
+  cxn.writeAll(payload);
+  cxn.close();
 }
 
 void DhtNode::reportDhtMsgReceived(const dhtmsg_t& dhtmsg) const {
