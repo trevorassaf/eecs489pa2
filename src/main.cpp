@@ -19,7 +19,6 @@
 #include "Connection.h"
 #include "ltga.h"
 #include "SocketException.h"
-#include "netimg.h"
 #include "DhtNode.h"
 
 #define SHA1_LENGTH 20 // bytes

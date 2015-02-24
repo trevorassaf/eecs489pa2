@@ -1,7 +1,6 @@
 #pragma once
 
 #include "hash.h"
-#include "netimg.h"
 
 #define DHTN_UNITTESTING 0
 
@@ -10,8 +9,8 @@
                         // with integer IDs, fingers[0] is immediate successor
 #define DHTM_VERS  0x2
 #define DHTM_TTL   10
-#define DHTM_QRY NETIMG_QRY  // 0x01
-#define DHTM_RPY NETIMG_RPY  // 0x02
+#define DHTM_QRY 0x01  // 0x01
+#define DHTM_RPY 0x02  // 0x02
 #define DHTM_JOIN  0x08
 #define DHTM_WLCM  0x04
 #define DHTM_REID  0x0c
@@ -23,13 +22,16 @@
 #define DHTM_RPLY 0x20   // reply to image search on the DHT
 #define DHTM_MISS 0x22   // image not found on the DHT 
 
+#define DHT_MAX_FILE_NAME 256
+
 enum DhtType {
   JOIN = 0x08,
   JOIN_ATLOC = (DHTM_ATLOC | JOIN),
   REDRT = 0x40,
   REID = 0x0c,
   WLCM = 0x04,
-  SRCH = 0x10
+  SRCH = 0x10,
+  SRCH_ATLOC = (DHTM_ATLOC | SRCH)
 };
 
 typedef struct {
@@ -59,5 +61,5 @@ typedef struct {
 typedef struct {            // PA2
   dhtmsg_t msg;                
   uint8_t img_id;
-  char name[NETIMG_MAXFNAME];
+  char name[DHT_MAX_FILE_NAME];
 } dhtsrch_t;                // used by QUERY, REPLY, and MISS

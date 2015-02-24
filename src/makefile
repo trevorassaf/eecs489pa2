@@ -10,18 +10,19 @@ DHTDB_OBJS = main.o \
 			 hash.o \
 			 DhtNode.o \
 			 Selector.o \
+			 ImageDb.o \
 			 SocketException.o
 DHTDB_HEADERS = ServiceBuilder.h \
 			 Service.h \
 			 ServerBuilder.h \
 			 Connection.h \
 			 ltga.h \
-			 netimg.h \
-			 packets.h \
 			 hash.h \
 			 DhtNode.h \
 			 Selector.h \
 			 dht_packets.h \
+			 ImageDb.h \
+			 netimg_packets.h \
 			 SocketException.h
 DHTDB_EXE = dhtdb
 
@@ -45,7 +46,7 @@ DHTDB_LIBS = $(CRYPTO_LIBS)
 all: $(DHTDB_EXE) $(NETIMG_EXE)
 
 dhtdb: $(DHTDB_OBJS) 
-	$(CC) $(LFLAGS) -o $(DHTDB_EXE) $(DHTDB_OBJS) $(DHTDB_LIBS)
+	$(CC) $(LFLAGS) -o $(DHTDB_EXE) $(DHTDB_OBJS) $(DHTDB_LIBS) $(NETIMG_LIBS)
 
 main.o: main.cpp $(DHTDB_HEADERS)
 	$(CC) $(CXXFLAGS) -c main.cpp
@@ -71,11 +72,14 @@ imgdb.o: ltga.h packets.h
 hash.o: hash.h netimg.h
 	$(CC) $(CXXFLAGS) -c hash.cpp
 
-DhtNode.o: DhtNode.h ServerBuilder.h ServiceBuilder.h Service.h Connection.h SocketException.h hash.h dht_packets.h netimg.h Selector.h
+DhtNode.o: DhtNode.h ServerBuilder.h ServiceBuilder.h Service.h Connection.h SocketException.h hash.h dht_packets.h netimg_packets.h Selector.h ImageDb.h ltga.h
 	$(CC) $(CXXFLAGS) -c DhtNode.cpp
 
 Selector.o: Selector.h
 	$(CC) $(CXXFLAGS) -c Selector.cpp
+
+ImageDb.o: ImageDb.h hash.h netimg_packets.h
+	$(CC) $(CXXFLAGS) -c ImageDb.cpp
 
 SocketException.o: SocketException.h
 	$(CC) $(CXXFLAGS) -c SocketException.cpp

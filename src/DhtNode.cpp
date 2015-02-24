@@ -3,6 +3,11 @@
 #include "dht_packets.h"
 
 #include <stdio.h>
+#ifdef __APPLE__
+#include <GLUT/glut.h>
+#else
+#include <GL/glut.h>
+#endif
 
 void DhtNode::initFingers() {
   // Finger table should hold only FINGER_TABLE_SIZE fingers
@@ -22,8 +27,8 @@ void DhtNode::initFingers() {
   finger_t& predecessor = getPredecessor();
   predecessor.node_id = id_;
   predecessor.remote
-      .setRemotePort(receiver_->getPort())
-      .setRemoteIpv4Address(receiver_->getIpv4());
+      .setRemotePort(dhtReceiver_->getPort())
+      .setRemoteIpv4Address(dhtReceiver_->getIpv4());
 }
 
 void DhtNode::fixUp(size_t j) {
@@ -77,8 +82,8 @@ void DhtNode::sendJoinRequest() {
   // Assemble 'self' packet 
   dhtnode_t self;
   self.id = id_; // one byte, no host -> network converstion needed!
-  self.port = htons(receiver_->getPort());
-  self.ipv4 = htonl(receiver_->getIpv4());
+  self.port = htons(dhtReceiver_->getPort());
+  self.ipv4 = htonl(dhtReceiver_->getIpv4());
 
   // Assemble join packet
   dhtmsg_t join_pkt = {header, htons(DHTM_TTL), self};
@@ -162,24 +167,32 @@ void DhtNode::printFingers() const {
       << "\nus<node-id: " << (int) id_ << ">" << std::endl;
 }
 
-void DhtNode::initReceiver() {
+void DhtNode::initDhtReceiver() {
   // Initialize listening socket
   ServiceBuilder builder;
-  receiver_ = builder
-    .enableAddressReuse()
-    .buildNew();
+  dhtReceiver_ = builder.buildNew();
 
   // Report address of this DhtNode
-  std::cout << "DhtNode address: " << receiver_->getDomainName()
-      << ":" << receiver_->getPort() << std::endl;
+  std::cout << "DhtNode address: " << dhtReceiver_->getDomainName()
+      << ":" << dhtReceiver_->getPort() << std::endl;
+}
+
+void DhtNode::initImageReceiver() {
+  // Initialize listening socket
+  ServiceBuilder builder;
+  imageReceiver_ = builder.buildNew();
+  
+  // Report address of this image socket 
+  std::cout << "Image receiver address: " << imageReceiver_->getDomainName()
+      << ":" << (int) imageReceiver_->getPort() << std::endl;
 }
 
 void DhtNode::deriveId() {
   // Prepare SHA1 hash inpute: port+address
-  uint16_t port = receiver_->getPort();
+  uint16_t port = dhtReceiver_->getPort();
   size_t port_num_bytes = sizeof(port);
   
-  uint32_t ipv4 = receiver_->getIpv4();
+  uint32_t ipv4 = dhtReceiver_->getIpv4();
   size_t ipv4_num_bytes = sizeof(ipv4);
   
   size_t addrport_num_bytes = ipv4_num_bytes + port_num_bytes; 
@@ -205,7 +218,7 @@ uint8_t DhtNode::foldId(uint16_t unfolded_id) const {
 
 void DhtNode::handleDhtTraffic() {
   // Accept connection from requesting remote
-  const Connection connection = receiver_->accept();
+  const Connection connection = dhtReceiver_->accept();
 
   // Read dht message and close connection
   dhtmsg_t message;
@@ -279,6 +292,242 @@ bool DhtNode::handleCliInput() {
 
   fflush(stdin);
   return true;
+}
+
+void DhtNode::handleImageTraffic() {
+
+  // Accept connection from client
+  const Connection * cxn = imageReceiver_->acceptNew();
+  
+  // Report that we're processing image traffic
+  std::cout << "Netimg request received! Client: <" << cxn->getRemoteIpv4() << 
+      ":" << cxn->getRemotePort() << ">" << std::endl;
+
+  // Read message from netimg client
+  iqry_t message;
+  cxn->readAll( (void *) &message, sizeof(message));
+
+  // Fail due to incorrect netimg packet version
+  assert(message.header.vers == NETIMG_VERS);
+
+  // Reject the netimg query if we're busy
+  if (servicingImageQuery_) {
+    rejectNetimgQuery(cxn);
+    return;
+  } 
+
+  // Block other requests until this one is finished
+  servicingImageQuery_ = true;
+
+  // Query local db
+  const std::string file_name(message.name);
+  QueryResult result = imageDb_->query(file_name);
+
+  switch (result) {
+    case QUERY_SUCCESS:
+      // Report image found locally
+      std::cout << "\t- Image found locally!" << std::endl;
+      handleLocalQuerySuccess(file_name, cxn);
+      return;
+
+    case BLOOM_FILTER_MISS:
+      // Report bloom filter miss
+      std::cout << "\t- Image NOT found locally -- bloom filter false positive!" << std::endl;
+      break;
+
+    case QUERY_FAILURE:
+      std::cout << "\t- Image NOT found locally -- not in bloom filter" << std::endl;
+      break;
+
+    default:
+      std::cout << "Invalid QueryResult type" << std::endl;
+      exit(1);
+  }
+
+  // Cache connection, re-use when we get a response for the query 
+  imageClient_ = cxn;
+  
+  // Forward packet to dht
+  forwardInitialImageQuery(file_name);   
+}
+
+void DhtNode::forwardInitialImageQuery(const std::string& file_name) {
+ 
+  // Fail b/c we should be in the 'servicing query' state
+  assert(servicingImageQuery_);
+
+  // Report that we're forwarding the image query over the dht
+  std::cout << "\t- Forwarding the image query to the DHT!" << std::endl;
+
+  // Assemble dhtsrch_t packet
+  dhtsrch_t srch_pkt;
+  srch_pkt.msg.header = {DHTM_VERS, DHTM_QRY};
+
+  // Provide our dht receiver as the node to connect to when
+  // the image is found
+  dhtnode_t self;
+  self.id = id_;
+  self.port = htons(dhtReceiver_->getPort());
+  self.ipv4 = htons(dhtReceiver_->getIpv4());
+  srch_pkt.msg.node = self;
+
+  // Add image query details
+  unsigned char md[SHA1_MDLEN];
+  SHA1((unsigned char *) file_name.c_str(), file_name.size(), md);
+
+  srch_pkt.img_id = static_cast<uint8_t>(ID(md)); 
+  memset(srch_pkt.name, 0, DHT_MAX_FILE_NAME);
+  memcpy(srch_pkt.name, file_name.c_str(), file_name.size());
+
+  // Forward search packet to network
+  forwardImageQuery(srch_pkt);
+}
+
+void DhtNode::forwardImageQuery(dhtsrch_t& srch_pkt) {
+
+  // Select finger to forward the search to
+  size_t finger_idx = findFingerForForwarding(srch_pkt.img_id);
+  
+  // Fail b/c finger idx is out of bounds
+  assert(finger_idx < fingerTable_.size() - 1);
+
+  const finger_t& target_finger = fingerTable_.at(finger_idx);   
+
+  // Fail b/c a non-search packet made it into this function
+  assert(srch_pkt.msg.header.type == SRCH 
+      || srch_pkt.msg.header.type == SRCH_ATLOC); 
+  
+  // Set ATLOC bit, if we expect to find the object at the finger 
+  srch_pkt.msg.header.type = (expectToFindObject(srch_pkt.img_id, target_finger))
+      ? SRCH_ATLOC
+      : SRCH;
+
+  // Report that we're forwarding the search request and that we don't necessarily
+  // expect the target finger to have the image 
+  std::cout << "\t- Forwarding SRCH to finger[" << finger_idx << "]:" <<
+      "<id: " << (int) target_finger.node_id <<
+      ", port: " << (int) target_finger.remote.getRemotePort() <<
+      ", ipv4: " << stringifyIpv4(htonl(target_finger.remote.getRemoteIpv4Address())) << 
+      ", type: " << getDhtTypeString(static_cast<DhtType>(srch_pkt.msg.header.type)) << 
+      ">." << std::endl;
+
+  // Fail b/c we shouldn't be forwarding to ourselves
+  assert(target_finger.node_id != id_);
+  
+  // Open connection to target finger and send message
+  std::string message((const char *) &srch_pkt, sizeof(srch_pkt));
+
+  Connection remote = target_finger.remote.build();
+
+  try {
+    remote.writeAll(message);
+
+    if (srch_pkt.msg.header.type == JOIN_ATLOC) {
+      // Wait for REDRT packet or for a closed connection. Remote will send REDRT
+      // if it doesn't have the purview that we expected it to have. Conversely,
+      // the remote will close the connection if it does accept the join request.
+      try {
+        dhtmsg_t redrt_pkt;  
+        size_t redrt_pkt_size = sizeof(redrt_pkt);
+
+        // Try to read REDRT packet
+        remote.readAll( (void *) &redrt_pkt, redrt_pkt_size);
+        remote.close();
+
+        // Handle REDRT pkt
+        handleSrchRedrt(redrt_pkt, srch_pkt, finger_idx);
+        return;
+
+      } catch (const PrematurelyClosedSocketException& e) {
+        // Report that no REDRT packet was received
+        std::cout << "\t- Remote closed connection. No REDRT packet received." << std::endl;
+      }
+    } 
+   
+    // Finally, close the connection (should never 
+    // reach here if a redrt packet was received)
+    remote.close();
+
+  } catch (const SocketException& e) {
+    std::cout << "Failed while trying to forward search packet!" << std::endl;
+    exit(1);
+  }
+}
+
+void DhtNode::handleLocalQuerySuccess(
+  const std::string& file_name,
+  const Connection* cxn
+) {
+ 
+  // Report that we're sending the image down to the client
+  std::cout << "\t- Streaming image down to client!" << std::endl;
+
+  // Load image
+  LTGA ltga(file_name);
+
+  // Assemble imsg_t packet, then serialize
+  imsg_t message;
+  message.header = {NETIMG_VERS, FOUND};
+  size_t image_size = (size_t) loadImsgPacket(ltga, message);
+  std::string message_str( (char *) &message, sizeof(message));
+ 
+  // Send image header packet
+  cxn->writeAll(message_str);
+
+  // Assemble image packet proper and send
+  std::string image_str( (char *) ltga.GetPixels(), image_size);
+
+  cxn->writeAll(image_str);
+  cxn->close();
+
+  // Make this node available to service other image queries
+  servicingImageQuery_ = false;
+}
+
+size_t DhtNode::loadImsgPacket(LTGA& curimg, imsg_t& imsg) const {
+  
+  int alpha, greyscale;
+  
+  imsg.im_depth = (unsigned char)(curimg.GetPixelDepth()/8);
+  imsg.im_width = htons(curimg.GetImageWidth());
+  imsg.im_height = htons(curimg.GetImageHeight());
+  alpha = curimg.GetAlphaDepth();
+  greyscale = curimg.GetImageType();
+  greyscale = (greyscale == 3 || greyscale == 11);
+  if (greyscale) {
+    imsg.im_format = alpha ? GL_LUMINANCE_ALPHA : GL_LUMINANCE;
+  } else {
+    imsg.im_format = alpha ? GL_RGBA : GL_RGB;
+  }
+
+  imsg.im_format = htons(imsg.im_format);
+
+  return (size_t) ((double) (curimg.GetImageWidth() *
+     curimg.GetImageHeight() *
+     (curimg.GetPixelDepth()/8)));
+}
+
+void DhtNode::rejectNetimgQuery(const Connection* cxn) const {
+ 
+  // Report that we're rejecting the netimg query because we're
+  // already servicing another netimg request.
+  std::cout << "\t- Rejecting netimg query because we're already handling another query" << std::endl;
+
+  // Assemble imsg_t packet
+  imsg_t message;
+  message.header = {NETIMG_VERS, NETIMG_RPY};
+  message.im_found = BUSY;
+  
+  std::string message_str( (char *) &message, sizeof(message));
+
+  // Send rejection to netimg client
+  try {
+    cxn->writeAll(message_str);
+    cxn->close();
+  } catch (const SocketException& e) {
+    std::cout << "Failed while sending rejection packet to netimg client." << std::endl;
+    exit(1);
+  }
 }
 
 void DhtNode::reportCliInstructions() const {
@@ -385,8 +634,8 @@ void DhtNode::handleJoinCollision(const dhtmsg_t& join_msg) {
   // Assemble 'self'
   dhtnode_t self;
   self.id = id_;
-  self.port = htons(receiver_->getPort());
-  self.ipv4 = htonl(receiver_->getIpv4());
+  self.port = htons(dhtReceiver_->getPort());
+  self.ipv4 = htonl(dhtReceiver_->getIpv4());
   reid_msg.node = self;
  
   // Serialize packet
@@ -415,8 +664,8 @@ void DhtNode::handleJoinAcceptance(const dhtmsg_t& join_msg) {
   // Make 'self' new successor of joining node
   dhtnode_t self;
   self.id = id_;
-  self.port = htons(receiver_->getPort());
-  self.ipv4 = htonl(receiver_->getIpv4());
+  self.port = htons(dhtReceiver_->getPort());
+  self.ipv4 = htonl(dhtReceiver_->getIpv4());
   wlcm.msg.node = self;
 
   // Make our current predecessor the predecessor of the joining node
@@ -474,7 +723,6 @@ void DhtNode::handleJoinAcceptance(const dhtmsg_t& join_msg) {
 
   // Reload db because our identifer space has now changed
   reloadDb();
-
 }
 
 void DhtNode::handleUnexpectedJoinFailureAndClose(
@@ -507,7 +755,7 @@ void DhtNode::handleUnexpectedJoinFailureAndClose(
       << (int) cxn.getRemotePort() << " with our predecessor: <id: " << 
       (int) predecessor_finger.node_id << ", port: " << 
       (int) predecessor_finger.remote.getRemotePort() << ", ipv4: " <<
-      stringifyIpv4(predecessor_finger.remote.getRemoteIpv4()) << ">" << std::endl;
+      stringifyIpv4(predecessor_finger.remote.getRemoteIpv4Address()) << ">" << std::endl;
 }
 
 void DhtNode::forwardJoin(dhtmsg_t join_msg) {
@@ -567,7 +815,7 @@ void DhtNode::forwardJoin(dhtmsg_t join_msg) {
         remote.close();
 
         // Handle REDRT pkt
-        handleRedrt(redrt_pkt, join_msg, finger_idx);
+        handleJoinRedrt(redrt_pkt, join_msg, finger_idx);
         return;
 
       } catch (const PrematurelyClosedSocketException& e) {
@@ -586,9 +834,12 @@ void DhtNode::forwardJoin(dhtmsg_t join_msg) {
   }
 }
 
-void DhtNode::reloadDb() {}
+void DhtNode::reloadDb() {
+  const finger_t& predecessor = getPredecessor();
+  imageDb_->load(predecessor.node_id, id_);
+}
 
-void DhtNode::handleRedrt(
+void DhtNode::handleJoinRedrt(
   const dhtmsg_t& redrt_pkt,
   const dhtmsg_t& join_pkt,
   size_t finger_idx
@@ -630,9 +881,6 @@ void DhtNode::handleRedrt(
       ", ipv4: " << stringifyIpv4(htonl(finger.remote.getRemoteIpv4Address())) << 
       ">" << std::endl;
 
-  // Reload db
-  reloadDb();
-
   // Fix finger table
   fixUp(finger_idx);
 
@@ -648,16 +896,19 @@ void DhtNode::handleReid() {
   // Report that we're generating a new id
   std::cout << "\t- Restarting dht socket and generating new id..." << std::endl;
 
-  // Close receiver socket and create a new one
-  close();
-  initReceiver();
+  // Close dht receiver socket and create a new one
+  dhtReceiver_->close();
+  delete dhtReceiver_;
+  initDhtReceiver();
 
   // Derive a new id from the new address+port of the new 
   // receiving socket and recompute fingers
   deriveId();
   initFingers();
-
   reportId();
+
+  // Reload image db
+  imageDb_->load(id_, id_);
  
   // Retry join
   sendJoinRequest();
@@ -697,7 +948,7 @@ void DhtNode::handleWlcmAndCloseCxn(
       .setRemotePort(ntohs(succ.port))
       .setRemoteIpv4Address(ntohl(succ.ipv4));
 
-  // Reload db
+  // Reload db b/c our predecessor changed
   reloadDb();
 
   // Fix finger table
@@ -747,6 +998,8 @@ std::string DhtNode::getDhtTypeString(DhtType type) const {
       return WLCM_STR;
     case SRCH:
       return SRCH_STR;
+    case SRCH_ATLOC:
+      return SRCH_ATLOC_STR;
     default:
       std::cout << "Invalid NodeType: " << type << std::endl;
       exit(1);
@@ -757,17 +1010,32 @@ void DhtNode::reportId() const {
   std::cout << "DhtNode ID: " << (int) id_ << std::endl;
 }
 
-DhtNode::DhtNode(uint8_t id) : id_(id), hasTarget_(false) {
-  initReceiver();
+DhtNode::DhtNode(uint8_t id) : 
+  imageDb_(nullptr),
+  imageClient_(nullptr),
+  servicingImageQuery_(false),
+  id_(id),
+  hasTarget_(false) 
+{
+  initImageReceiver();
+  initDhtReceiver();
   initFingers();
   reportId();
+  imageDb_ = new ImageDb(id_);
 }
 
-DhtNode::DhtNode() : hasTarget_(false) {
-  initReceiver();
+DhtNode::DhtNode() : 
+  imageDb_(nullptr),
+  imageClient_(nullptr),
+  servicingImageQuery_(false),
+  hasTarget_(false)
+{
+  initImageReceiver();
+  initDhtReceiver();
   deriveId();
   initFingers();
   reportId();
+  imageDb_ = new ImageDb(id_);
 }
 
 void DhtNode::joinNetwork(const std::string& fqdn, uint16_t port) {
@@ -793,15 +1061,24 @@ void DhtNode::run() {
         return handleCliInput(); 
       }
   );
+  
+  // Listen on 'image receiver' socket for image trafic 
+  selector.bind(
+      imageReceiver_->getFd(),
+      [&] (int sd) -> bool {
+        handleImageTraffic(); 
+        return true;
+      }
+  );
 
   bool should_continue = true;
 
   do {
-    int receiver_fd = receiver_->getFd();
+    int receiver_fd = dhtReceiver_->getFd();
 
-    // Listen on 'receiver' socket for dht messages 
+    // Listen on 'dht receiver' socket for dht traffic
     selector.bind(
-        receiver_->getFd(),
+        dhtReceiver_->getFd(),
         [&] (int sd) -> bool {
           handleDhtTraffic();               
           return true;
@@ -816,33 +1093,15 @@ void DhtNode::run() {
   } while (should_continue);
 }
 
-void DhtNode::resetId() {
-  // Close current receiver socket
-  try {
-    receiver_->close(); 
-  } catch (const SocketException& e) {
-    // Report failure and kill node
-    std::cout << "Failed to close receiver socket during id-reset. "
-        << "Terminating node with failure." << std::endl;
-    exit(1);
-  }
-
-  // Open new receiver socket and compute derived id
-  initReceiver();  
-  deriveId();
-}
-
-uint8_t DhtNode::getId() const {
-  return id_;
-}
-
 void DhtNode::close() {
   try {
-    receiver_->close();
+    dhtReceiver_->close();
+    imageReceiver_->close();
   } catch (const SocketException& e) {
     std::cout << "Failed to close DhtNode!" << std::endl;
     exit(1);
   }
 
-  delete receiver_;
+  delete dhtReceiver_;
+  delete imageReceiver_;
 }

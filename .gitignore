@@ -1,3 +1,5 @@
 *.o
 dhtdb
 netimg
+images
+*.tga

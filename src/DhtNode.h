@@ -11,6 +11,9 @@
 #include "hash.h"
 #include "Selector.h"
 #include "dht_packets.h"
+#include "ImageDb.h"
+#include "netimg_packets.h"
+#include "ltga.h"
 
 #define FINGER_TABLE_SIZE 8
 #define NUM_IDS 0x100 // 2^FINGER_TABLE_SIZE
@@ -23,14 +26,30 @@
 #define REID_STR "REID"
 #define WLCM_STR "WLCM"
 #define SRCH_STR "SRCH"
+#define SRCH_ATLOC_STR "SRCH_ATLOC"
 
 class DhtNode {
 
   private:
     /**
-     * Socket for receiving join messages.
+     * Image database handle.
      */
-    const Service* receiver_; 
+    ImageDb* imageDb_;
+
+    /**
+     * Connection to the netimg client that we're proxying.
+     */
+    const Connection * imageClient_;
+    
+    /**
+     * Socket for receiving dht and image traffic.
+     */
+    const Service * dhtReceiver_, * imageReceiver_; 
+
+    /**
+     * Specifies whether or not we're currently servicing and image query.
+     */
+    bool servicingImageQuery_;
 
     /**
      * SHA1 id into 8 bits.
@@ -73,10 +92,18 @@ class DhtNode {
     void initFingers();
 
     /**
-     * initReceiver()
-     * - Construct and set listening socket. Prints out the address.
+     * initDhtReceiver()
+     * - Construct and set listening socket for monitoring dht traffic. 
+     *   Prints out the address.
      */
-    void initReceiver();
+    void initDhtReceiver();
+
+    /**
+     * initImageReceiver()
+     * - Construct and set listening socket for monitoring image traffic.
+     *   Print out the address.
+     */
+    void initImageReceiver();
 
     /**
      * deriveId()
@@ -111,6 +138,20 @@ class DhtNode {
      * @return true iff node should continue to listen 
      */
     bool handleCliInput();
+
+    /**
+     * handleImageTraffic()
+     * - Read data from image socket and process it.
+     */
+    void handleImageTraffic();
+
+    /**
+     * handleLocalQuerySuccess()
+     * - Found image in local db. Stream down to client.
+     * @param file_name : name of file to search for
+     * @param cxn : connection to querying netimg client
+     */
+    void handleLocalQuerySuccess(const std::string& file_name, const Connection* cxn);
 
     /**
      * reportCliInstructions()
@@ -172,14 +213,27 @@ class DhtNode {
     void reloadDb();
 
     /**
-     * handleRedrt()
+     * handleJoinRedrt()
      * - Make provded node our new successor and forward the original
      *   join request to the successor.
      * @param redrt_pkt : redirect packet that we received (network-byte-order)
      * @param join_pkt : join packet that we sent (network-byte-order)
      * @param finger_idx : index of finger that we sent join to
      */
-    void handleRedrt(
+    void handleJoinRedrt(
+        const dhtmsg_t& redrt_pkt,
+        const dhtmsg_t& join_pkt,
+        size_t finger_idx);
+    
+    /**
+     * handleSearchRedrt()
+     * - Make provded node our new successor and forward the original
+     *   join request to the successor.
+     * @param redrt_pkt : redirect packet that we received (network-byte-order)
+     * @param join_pkt : join packet that we sent (network-byte-order)
+     * @param finger_idx : index of finger that we sent join to
+     */
+    void handleSearchRedrt(
         const dhtmsg_t& redrt_pkt,
         const dhtmsg_t& join_pkt,
         size_t finger_idx);
@@ -311,7 +365,37 @@ class DhtNode {
      * @return ipv4 address in dotted decimal form
      */
     const std::string stringifyIpv4(uint32_t ipv4) const;
+
+    /**
+     * rejectNetimgQuery()
+     * - Deny client query b/c we're already handling a query.
+     * @param csn : connection to netimg client
+     */
+    void rejectNetimgQuery(const Connection* cxn) const;
+
+    /**
+     * loadImsgPacket()
+     * - Inflate imsg packet with data from ltga img
+     * @param ltga : image
+     * @param imsg : packet to return to sender
+     */
+    size_t loadImsgPacket(LTGA& ltga, imsg_t& imsg) const;
+
+    /**
+     * forwardInitialImageQueryToDht()
+     * - Send image query along fingers in dht.
+     * @param file_name : name of image file
+     */
+    void forwardInitialImageQuery(const std::string& file_name);
     
+    /**
+     * forwardImageQueryToDht()
+     * - Send image query along fingers in dht.
+     * @param srch_pkt : packet containing search query 
+     */
+    void forwardImageQuery(dhtsrch_t& srch_pkt);
+
+
     // TODO remove!
     void printFingers() const;
 
@@ -342,19 +426,6 @@ class DhtNode {
      * - Await incoming messages.
      */
     void run();
-
-    /**
-     * resetId()
-     * - Restart listening socket on new ephemeral port and 
-     *   recompute id.
-     */
-    void resetId();
-
-    /**
-     * getId()
-     * - Return this node's ID.
-     */
-    uint8_t getId() const;
 
     /**
      * close()
