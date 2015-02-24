@@ -64,8 +64,6 @@ void Service::initService() {
   struct sockaddr_in* ipv4addr = (struct sockaddr_in*) servinfo->ai_addr;
   ipv4_ = ntohl(ipv4addr->sin_addr.s_addr);
   ::freeaddrinfo(servinfo);
-
-  std::cout << "ipv: " << (int) getIpv4() << std::endl;
 }
 
 int Service::initSocket() const {

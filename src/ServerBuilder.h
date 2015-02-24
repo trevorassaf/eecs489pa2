@@ -82,11 +82,23 @@ class ServerBuilder {
     ServerBuilder& setRemotePort(uint16_t port);
 
     /**
+     * getRemotePort()
+     * - Return remote's port.
+     */
+    uint16_t getRemotePort() const;
+
+    /**
      * setRemoteIpv4Address()
      * - Specify address of target in ipv4 format.
      * @param ipv4_addr : host's ipv4 address in host-byte-order
      */
     ServerBuilder& setRemoteIpv4Address(uint32_t ipv4_addr);
+
+    /**
+     * getRemoteIpv4Address()
+     * - Return remote's ipv4 address.
+     */
+    uint32_t getRemoteIpv4Address() const;
 
     /**
      * enableAddressReuse()

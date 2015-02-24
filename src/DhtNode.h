@@ -18,6 +18,7 @@
 
 // DhtType Strings
 #define JOIN_STR "JOIN"
+#define JOIN_ATLOC_STR "JOIN_ATLOC"
 #define REDRT_STR "REDRT"
 #define REID_STR "REID"
 #define WLCM_STR "WLCM"
@@ -48,20 +49,22 @@ class DhtNode {
      * Finger table holding addresses of known successors.
      */
     std::vector<finger_t> fingerTable_;
-  
-    /**
-     * Predecessor data stored in host-byte-order.
-     */
-    struct predecessor_t {
-      uint8_t node_id;
-      uint8_t port;
-      uint32_t ipv4;
-    };
 
     /**
-     * Predecessor node.
+     * FQDN of target, if specified.
      */
-    predecessor_t predecessor_;
+    std::string targetFqdn_;
+
+    /**
+     * Port of target, if specified. Host-byte-order.
+     */
+    uint16_t targetPort_;
+
+    /**
+     * Indicates whether or not a target has been specified.
+     * False iff this node is first node in the network.
+     */
+    bool hasTarget_;
 
     /**
      * initFingers()
@@ -145,23 +148,22 @@ class DhtNode {
     void handleJoinAcceptance(const dhtmsg_t& join_msg);
 
     /**
-     * handleUnexpectedJoinFailure()
+     * handleUnexpectedJoinFailureAndClose()
      * - Handle join failure that occurred contrary to 
      *   sender's expectations.
      * @param join_msg : join message
      * @param dead_cxn : closed connection with sender
      */
-    void handleUnexpectedJoinFailure(
+    void handleUnexpectedJoinFailureAndClose(
         const dhtmsg_t& join_msg, 
-        const Connection& dead_cxn
-    ) const;
+        const Connection& dead_cxn);
 
     /**
      * forwardJoin()
-     * - Forward join message to best finger.
-     * @param join_msg : join message payload 
+     * - Forward join message to best candidate finger.
+     * @param join_msg : message to forward 
      */
-    void forwardJoin(const dhtmsg_t& join_msg) const;
+    void forwardJoin(dhtmsg_t join_msg);
 
     /**
      * reloadDb()
@@ -171,23 +173,28 @@ class DhtNode {
 
     /**
      * handleRedrt()
-     * - Read and process join message request
-     * @param msg : packet from the network (network-byte-order)
-     * @param connection : connection to requesting node
+     * - Make provded node our new successor and forward the original
+     *   join request to the successor.
+     * @param redrt_pkt : redirect packet that we received (network-byte-order)
+     * @param join_pkt : join packet that we sent (network-byte-order)
+     * @param finger_idx : index of finger that we sent join to
      */
-    void handleRedrt(const dhtmsg_t& msg, const Connection& connection);
+    void handleRedrt(
+        const dhtmsg_t& redrt_pkt,
+        const dhtmsg_t& join_pkt,
+        size_t finger_idx);
 
     /**
      * handleReid()
-     * - Read and process join message request
-     * @param msg : packet from the network (network-byte-order)
-     * @param connection : connection to requesting node
+     * - An ID collision has occurred and we, the newly joining node,
+     *   have been instructed to generate a new ID and reconnect.
      */
-    void handleReid(const dhtmsg_t& msg, const Connection& connection);
+    void handleReid();
 
     /**
      * handleWlcmAndCloseCxn()
-     * - Read and process join message request
+     * - Read one more dhtnode_t off of the wire and incorporate
+     *   provided predecessor/successor into our finger table.
      * @param msg : packet from the network (network-byte-order)
      * @param connection : connection to requesting node
      */
@@ -210,12 +217,19 @@ class DhtNode {
     bool doesJoinCollide(const dhtmsg_t& join_msg) const;
 
     /**
-     * canJoin()
-     * - Test if the id of the joining node falls in the range between
-     *   the current node and its predecessor.
+     * inOurPurview()
+     * - Test if the id of the joining node falls in our range.
      * @param join_msg : join message 
      */
-    bool canJoin(const dhtmsg_t& join_msg) const;
+    bool inOurPurview(const dhtmsg_t& join_msg) const;
+    
+    /**
+     * inSuccessorsPurview()
+     * - Test if the id of the joining node falls in the range between
+     *   use and our sucessor.
+     * @param join_msg : join message 
+     */
+    bool inSuccessorsPurview(const dhtmsg_t& join_msg) const;
 
     /**
      * senderExpectedJoin()
@@ -225,12 +239,11 @@ class DhtNode {
     bool senderExpectedJoin(const dhtmsg_t& join_msg) const;
 
     /**
-     * reportDhtMsg()
-     * - Report dht message packet received.
-     * @param dhtmsg : dht message packet
-     * @param connection : connection to sending node
+     * reportDhtMsgReceived()
+     * - Report dht packet type and sender.
+     * @param dhtmsg : dht packet
      */
-    void reportDhtMsg(const dhtmsg_t& dhtmsg, const Connection& connection) const;
+    void reportDhtMsgReceived(const dhtmsg_t& dhtmsg) const;
    
     /**
      * getDhtTypeStriing()
@@ -253,6 +266,59 @@ class DhtNode {
      */
     void fixDown(size_t idx);
 
+    /**
+     * sendJoinRequest()
+     * - Send request to target for join.
+     */
+    void sendJoinRequest();
+
+    /**
+     * getPredecessor()
+     * - Return reference to predecessor finger.
+     * @return predecessor finger. 
+     */
+    finger_t& getPredecessor();
+    
+    /**
+     * getPredecessor()
+     * - Return reference to predecessor finger. Here to allow const reads.
+     * @return predecessor finger. 
+     */
+    const finger_t& getPredecessor() const;
+
+    /**
+     * findFingerForForwarding()
+     * - Find the finger to forward the request to.
+     * - That is, of the fingers in our finger table with IDs less than
+     *   the target object, select the finger with the greatest node-id.
+     * @param object_id : id of target object
+     */
+    size_t findFingerForForwarding(uint8_t object_id) const;
+
+    /**
+     * forwardJoinToSuccessor()
+     * - Send join to successor. Indicate that we expect the join to
+     *   succeed by setting the type to JOIN_ATLOC.
+     * @param join_pkt : join message
+     */
+    void forwardJoinToSuccessor(dhtmsg_t join_pkt);
+
+    /**
+     * forwardJoinToFinger()
+     * - Send join request to provided finger. Type must be JOIN, not JOIN_ATLOC.
+     * @param join_pkt : join request
+     * @param finger : finger to forward the request to
+     */
+    void forwardJoinToFinger(dhtmsg_t join_pkt, const finger_t& finger) const;
+
+    /**
+     * stringifyIpv4()
+     * - Transform numerical ipv4 to dotted decimal.
+     * @param ipv4 : numerical version of ipv4 address (network-byte-order)
+     * @return ipv4 address in dotted decimal form
+     */
+    const std::string stringifyIpv4(uint32_t ipv4) const;
+    
     // TODO remove!
     void printFingers() const;
 

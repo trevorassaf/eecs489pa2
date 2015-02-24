@@ -27,10 +27,21 @@ ServerBuilder& ServerBuilder::setRemotePort(uint16_t port) {
   return *this;
 }
 
+uint16_t ServerBuilder::getRemotePort() const {
+  return remotePort_;
+}
+
 ServerBuilder& ServerBuilder::setRemoteIpv4Address(uint32_t ipv4_addr) {
   remoteIpv4Address_ = ipv4_addr;
   hasRemoteIpv4Address_ = true;
   return *this;
+}
+
+uint32_t ServerBuilder::getRemoteIpv4Address() const {
+  // Fail b/c we don't have a remote ipv4 yet
+  assert(hasRemoteIpv4Address_);
+
+  return remoteIpv4Address_;
 }
 
 ServerBuilder& ServerBuilder::enableAddressReuse() {

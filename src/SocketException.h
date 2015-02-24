@@ -13,6 +13,15 @@ class SocketException : public std::runtime_error {
    SocketException(const std::string& msg);
 };
 
+class PrematurelyClosedSocketException : public SocketException {
+
+ public:
+   /**
+    * PrematurelyClosedSocketException()
+    */
+   PrematurelyClosedSocketException(const std::string& msg);
+};
+
 class BusyAddressSocketException : public SocketException {
 
  public:

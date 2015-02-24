@@ -60,6 +60,10 @@ const std::string Connection::read(size_t buff_size) const {
   int bytes_read = ::recv(fileDescriptor_, buff, buff_size, 0);
   if (bytes_read == -1) {
     throw SocketException("Failed to read from socket.");
+  } else if (bytes_read == 0) {
+    throw PrematurelyClosedSocketException(
+      std::string("Socket closed while attempting to read") 
+      + std::to_string(buff_size) + " bytes");
   }
 
   return std::string(buff, bytes_read);

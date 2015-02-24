@@ -6,7 +6,7 @@
 
 void DhtNode::initFingers() {
   // Finger table should hold only FINGER_TABLE_SIZE fingers
-  fingerTable_ = std::vector<finger_t>(FINGER_TABLE_SIZE);
+  fingerTable_ = std::vector<finger_t>(FINGER_TABLE_SIZE + 1);
   for (size_t i = 0; i < FINGER_TABLE_SIZE; ++i) {
   uint16_t unfolded_finger_id = (1 << i) + id_; 
     
@@ -18,18 +18,23 @@ void DhtNode::initFingers() {
     fingerTable_[i] = finger;
   }
 
-  predecessor_.node_id = id_;
+  // Initialize predecessor to point to ourself
+  finger_t& predecessor = getPredecessor();
+  predecessor.remote.setRemotePort(receiver_->getPort());
+  predecessor.remote.setRemoteIpv4Address(receiver_->getIpv4());
+  predecessor.node_id = id_;
 }
 
 void DhtNode::fixUp(size_t j) {
   // Fail b/c finger table is malformed
-  assert(fingerTable_.size() == FINGER_TABLE_SIZE);
+  assert(fingerTable_.size() == FINGER_TABLE_SIZE + 1);
 
   // Fail b/c j is out of bounds
   assert(j < fingerTable_.size());
 
   finger_t& finger_j = fingerTable_.at(j);
-  for (size_t k = j + 1; k < fingerTable_.size(); ++k) {
+  size_t limit = fingerTable_.size() - 1; /* don't include predecessor */
+  for (size_t k = j + 1; k < limit; ++k) {
     finger_t& finger = fingerTable_.at(k);
     if (ID_inrange(finger.finger_id, id_, finger_j.node_id)) {
       finger.node_id = finger_j.node_id;
@@ -41,13 +46,13 @@ void DhtNode::fixUp(size_t j) {
 
 void DhtNode::fixDown(size_t j) {
   // Fail b/c finger table is malformed
-  assert(fingerTable_.size() == FINGER_TABLE_SIZE);
+  assert(fingerTable_.size() == FINGER_TABLE_SIZE + 1);
 
   // Fail b/c j is out of bounds
   assert(j < fingerTable_.size() && j > 0);
 
   finger_t& finger_j = fingerTable_.at(j);
-  for (size_t k = j - 1; k >= 0; --k) {
+  for (int k = j - 1; k >= 0; --k) {
     finger_t& finger = fingerTable_.at(k);
     if (finger.finger_id == finger.node_id) {
       break;
@@ -57,18 +62,161 @@ void DhtNode::fixDown(size_t j) {
   }
 }
 
+void DhtNode::sendJoinRequest() {
+  // Fail b/c target was not specified
+  assert(hasTarget_);
+  
+  // Assemble header packet 
+  dhtheader_t header = {DHTM_VERS, DHTM_JOIN};
+  
+  // Assemble 'self' packet 
+  dhtnode_t self;
+  self.id = id_; // one byte, no host -> network converstion needed!
+  self.port = htons(receiver_->getPort());
+  self.ipv4 = htonl(receiver_->getIpv4());
+
+  // Assemble join packet
+  dhtmsg_t join_pkt = {header, htons(DHTM_TTL), self};
+  const std::string message((const char *) &join_pkt, sizeof(join_pkt));
+
+  std::cout << "Sending JOIN packet to " << targetFqdn_ << ":" << (int) targetPort_ <<
+      " <ttl: " << (int) ntohs(join_pkt.ttl) << 
+      ", id: " << (int) join_pkt.node.id << 
+      ", port: " << (int) ntohs(join_pkt.node.port) << 
+      ", ipv4: " << stringifyIpv4(join_pkt.node.ipv4) << ">" << std::endl;
+
+  // Connect to DHT network through specified target
+  ServerBuilder builder; 
+  const Connection remote = builder
+    .setRemoteDomainName(targetFqdn_)
+    .setRemotePort(targetPort_)
+    .build();
+
+  // Send join message to first network node and close connection
+  try {
+    remote.writeAll(message);
+    remote.close();
+  } catch (const SocketException& e) {
+    std::cout << "Failed while writing data to first target!" << std::endl;
+    exit(1);
+  }
+}
+
+DhtNode::finger_t& DhtNode::getPredecessor() {
+  return fingerTable_.back();
+}
+
+const DhtNode::finger_t& DhtNode::getPredecessor() const {
+  return fingerTable_.back();
+}
+
+size_t DhtNode::findFingerForForwarding(uint8_t object_id) const {
+  size_t limit = fingerTable_.size() - 1;
+  size_t idx = 0;
+  while (idx < limit) {
+    const finger_t& tail = fingerTable_.at(idx);
+    const finger_t& head = fingerTable_.at(++idx);
+    
+    if (ID_inrange(object_id, head.node_id, tail.node_id)) {
+      break;
+    }
+  }
+
+  return idx;
+}
+
+void DhtNode::forwardJoinToSuccessor(dhtmsg_t join_pkt) {
+  // Reassign packet type to JOIN_ATLOC if it was previously JOIN
+  if (join_pkt.header.type == JOIN) {
+    join_pkt.header.type = JOIN_ATLOC;
+  }
+
+  // Fail b/c all packets should have 'type' set to JOIN_ATLOC
+  // at this point.
+  assert(join_pkt.header.type == JOIN_ATLOC);
+
+  // Open connection to target finger and send join request
+  std::string message((const char *) &join_pkt, sizeof(join_pkt));
+  const finger_t& successor_finger = fingerTable_.front();
+
+  try {
+    Connection successor_cxn = successor_finger.remote.build();
+    successor_cxn.writeAll(message); 
+
+    // Wait for REDRT packet or for a closed connection. Remote will send REDRT
+    // if it doesn't have the purview that we expected it to have. Conversely,
+    // the remote will close the connection if it does accept the join request.
+    try {
+      dhtmsg_t redrt_pkt;  
+      size_t redrt_pkt_size = sizeof(redrt_pkt);
+
+      // Try to read REDRT packet
+      successor_cxn.readAll( (void *) &redrt_pkt, redrt_pkt_size);
+      successor_cxn.close();
+
+      // Handle REDRT pkt
+      handleRedrt(redrt_pkt, join_pkt, 0);
+
+    } catch (const PrematurelyClosedSocketException& e) {
+      // Report that no REDRT packet was received
+      std::cout << "Remote closed connection. No REDRT packet received." << std::endl;
+      successor_cxn.close();
+    }
+  } catch (const SocketException& e) {
+    std::cout << "Encountered error while forwarding join to successor" << std::endl;
+    exit(1);
+  }
+}
+
+void DhtNode::forwardJoinToFinger(
+    dhtmsg_t join_pkt,
+    const finger_t& finger
+) const {
+
+  // Reassign packet type to JOIN if it was previously JOIN_ATLOC
+  if (join_pkt.header.type == JOIN_ATLOC) {
+    join_pkt.header.type = JOIN;
+  }
+
+  // Fail b/c all packets should have 'type' set to JOIN
+  // at this point.
+  assert(join_pkt.header.type == JOIN);
+
+  // Open connection to target finger and send message
+  std::string message((const char *) &join_pkt, sizeof(join_pkt));
+
+  Connection remote = finger.remote.build();
+
+  try {
+    remote.writeAll(message);
+    remote.close();
+  } catch (const SocketException& e) {
+    std::cout << "Failed while trying to forward join packet!" << std::endl;
+    exit(1);
+  }
+}
+
+const std::string DhtNode::stringifyIpv4(uint32_t ipv4) const {
+  char ipv4_cstr[INET_ADDRSTRLEN];
+  memset(ipv4_cstr, 0, INET_ADDRSTRLEN);
+  struct in_addr addr = {ipv4};
+  inet_ntop(AF_INET, (void *) &addr, ipv4_cstr, INET_ADDRSTRLEN);
+
+  return std::string(ipv4_cstr);
+}
+
 // TODO remove this!
 void DhtNode::printFingers() const {
-  std::cout << "--- FINGER PRINT ---" << std::endl;
+  std::cout << "--- FINGER TABLE DUMP ---" << std::endl;
 
   for (size_t i = 0; i < FINGER_TABLE_SIZE; ++i) {
     const finger_t finger = fingerTable_[i];
-    std::cout << "finger<idx: " << i << ", finger-id: " << (int) finger.finger_id
-        << ", node-id: " << (int) finger.node_id << std::endl;
+    std::cout << "finger<idx: " << i << ", fID: " << (int) finger.finger_id
+        << ", finger: " << (int) finger.node_id << std::endl;
   }
 
-  std::cout << "predecessor<node-id: " << (int) predecessor_.node_id 
-    << ">"<< std::endl;
+  std::cout << "predecessor<node-id: " << (int) getPredecessor().node_id << ">"
+      << "us<node-id: " << (int) id_ << ">"std::endl;
 }
 
 void DhtNode::initReceiver() {
@@ -77,9 +225,6 @@ void DhtNode::initReceiver() {
   receiver_ = builder
     .enableAddressReuse()
     .buildNew();
-
-  predecessor_.port = receiver_->getPort();
-  predecessor_.ipv4 = receiver_->getIpv4();
 
   // Report address of this DhtNode
   std::cout << "DhtNode address: " << receiver_->getDomainName()
@@ -133,29 +278,27 @@ void DhtNode::handleDhtTraffic() {
   }
 
   // Report request
-  reportDhtMsg(message, connection);
+  reportDhtMsgReceived(message);
 
   // Handle ops that require open connections
   uint8_t type = message.header.type;
   switch (type) {
     case JOIN:
     case JOIN_ATLOC:
-    handleJoinAndCloseCxn(message, connection);
+      handleJoinAndCloseCxn(message, connection);
       return;
     case WLCM:
       handleWlcmAndCloseCxn(message, connection);
       return;
   }
-  
+ 
+  // Subsequent ops don't neet the connection, so close it.
   connection.close();
   
   // Handle ops that permit closed connections
   switch (message.header.type) {
-    case REDRT:
-      handleRedrt(message, connection);
-      break;
     case REID:
-      handleReid(message, connection);
+      handleReid();
       break;
     default:
       std::cout << "Invalid header type received: " << (int) message.header.type
@@ -182,6 +325,9 @@ bool DhtNode::handleCliInput() {
       case 'p':
         reportAdjacentNodes();
         break;
+      case 'f':
+        printFingers(); 
+        break;
       default:
         reportCliInstructions();
         break;
@@ -198,10 +344,11 @@ void DhtNode::reportCliInstructions() const {
 }
 
 void DhtNode::reportAdjacentNodes() const {
+  const finger_t& predecessor_finger = getPredecessor();
   std::cout << "--- Adjacent Node Info ---\n\t- predecessor ID: "
-      << (int) predecessor_.node_id;
+      << (int) predecessor_finger.node_id;
   
-  if (predecessor_.node_id == id_) {
+  if (predecessor_finger.node_id == id_) {
     std::cout << " (self)";
   }
 
@@ -219,51 +366,58 @@ void DhtNode::handleJoinAndCloseCxn(
   const dhtmsg_t& join_msg,
   const Connection& cxn
 ) {
+  // Fail b/c msg is not a join message
+  assert(join_msg.header.type == JOIN || join_msg.header.type == JOIN_ATLOC);
+
+  // Report join request
+  std::cout << "\t- Remote is attempting to join with id: " << (int) join_msg.node.id << std::endl;
+  
   // Reject join request, if node's id collides
   if (doesJoinCollide(join_msg)) {
     // Close connection to sender, we're going to reconnect
     // to join initiator
     cxn.close();
 
-    // Report collision
-    std::cout << "Requesting JOIN collides with us! Id(self) = " << (int) id_ <<
-      ", Id(predecessor) = " << (int) predecessor_.node_id << 
-      ", Id(joining-node)" << (int) join_msg.node.id << std::endl;
+    // Report that incomming node collides 
+    std::cout << "\t- Join request declined! Requested id collides with us! Id(self) : " << (int) id_ <<
+        ", Id(predecessor) : " << (int) getPredecessor().node_id << std::endl;
 
-    // Notify join initiator of collision
+    // Notify requesting node of id collision
     handleJoinCollision(join_msg);
 
-  } else if (canJoin(join_msg)) {
+  } else if (inOurPurview(join_msg)) {
     // Close connection to sender, we're going to reconnect
-    // to join initiator
+    // to join initiator and send along a WLCM message
     cxn.close();
-    
+   
+    // Report that we've accepted the join 
+    std::cout << "\t- We've accepted the remote's join request!" << std::endl;
+
     // Accept join request, make requester new predecessor
-    uint8_t old_predecessor_id = predecessor_.node_id;
+    finger_t& predecessor_finger = getPredecessor();
+    uint8_t old_predecessor_id = predecessor_finger.node_id;
     handleJoinAcceptance(join_msg);
     
     // Report successful join
-    std::cout << "JOIN accepted! Old precessor id = " << old_predecessor_id <<
-      ", new predecessor id = " << predecessor_.node_id << std::endl;
+    std::cout << "\t- Now replacing former predecessor with joining node..." << 
+        "\n\t\t- Id(old predecessor) : " << (int) old_predecessor_id <<
+        "\n\t\t- Id(new predecessor) : " << (int) predecessor_finger.node_id << std::endl;
 
   } else {
     // Report failed JOIN attempt
-    std::cout << "JOIN request failed! Couldn't find " << (int) join_msg.node.id
-      << " in identifier space (" << (int) id_ << ", " << (int) predecessor_.node_id
-      << std::endl;
+    std::cout << "\t- Request failed! Couldn't find " << (int) join_msg.node.id
+        << " in identifier space (" << (int) id_ << ", " << (int) getPredecessor().node_id
+        << std::endl;
 
     if (senderExpectedJoin(join_msg)) {
       // Report that sender expected the join to succeed but it didn't
-      std::cout << "But sender " << cxn.getRemoteDomainName() << ":"
-        << (int) cxn.getRemotePort() << " DID expect to JOIN with us..."
-        << std::endl;
+      std::cout << "\t- But sender " << cxn.getRemoteDomainName() << ":"
+          << (int) cxn.getRemotePort() << " DID expect to join with us..."
+          << std::endl;
 
       // Inform sender that the join failed, even though the sender
       // expected the join to succeed
-      handleUnexpectedJoinFailure(join_msg, cxn);
-      
-      // Close connection to sender b/c we're finished with it
-      cxn.close();
+      handleUnexpectedJoinFailureAndClose(join_msg, cxn);
 
     } else {
       // Close connection to sender b/c we're going to forward the join
@@ -271,8 +425,8 @@ void DhtNode::handleJoinAndCloseCxn(
       cxn.close();
 
       // Report that sender did not expect to join with us
-      std::cout << "Sender " << cxn.getRemoteDomainName() << ":"
-        << (int) cxn.getRemotePort() << " DID NOT expect to JOIN with us."
+      std::cout << "\t- Sender " << cxn.getRemoteDomainName() << ":"
+        << (int) cxn.getRemotePort() << " DID NOT expect to join with us."
         << std::endl;
 
       // Forward join request to next best node
@@ -285,6 +439,15 @@ void DhtNode::handleJoinCollision(const dhtmsg_t& join_msg) {
   // Assemble reid payload
   dhtmsg_t reid_msg;
   reid_msg.header = {DHTM_VERS, REID};
+ 
+  // Assemble 'self'
+  dhtnode_t self;
+  self.id = id_;
+  self.port = htons(receiver_->getPort());
+  self.ipv4 = htonl(receiver_->getIpv4());
+  reid_msg.node = self;
+ 
+  // Serialize packet
   std::string reid_msg_str((char *) &reid_msg, sizeof(reid_msg));
 
   // Send reid messsage to node that initiated the join
@@ -298,7 +461,7 @@ void DhtNode::handleJoinCollision(const dhtmsg_t& join_msg) {
   connection.close();
   
   // Report sending REID
-  std::cout << "Sending REID to " << connection.getRemoteDomainName() << ":"
+  std::cout << "\t- Sending REID packet to " << connection.getRemoteDomainName() << ":"
     << connection.getRemotePort() << std::endl;
 }
 
@@ -316,9 +479,10 @@ void DhtNode::handleJoinAcceptance(const dhtmsg_t& join_msg) {
 
   // Make our current predecessor the predecessor of the joining node
   dhtnode_t pred;
-  pred.id = predecessor_.node_id;
-  pred.port = htons(predecessor_.port);
-  pred.ipv4 = htonl(predecessor_.ipv4);
+  finger_t& predecessor_finger = getPredecessor();
+  pred.id = predecessor_finger.node_id;
+  pred.port = htons(predecessor_finger.remote.getRemotePort());
+  pred.ipv4 = htonl(predecessor_finger.remote.getRemoteIpv4Address());
   wlcm.predecessor = pred;
 
   std::string wlcm_str((char *) &wlcm, sizeof(wlcm));
@@ -333,21 +497,30 @@ void DhtNode::handleJoinAcceptance(const dhtmsg_t& join_msg) {
   connection.writeAll(wlcm_str);
   connection.close();
 
-  // Report sending WLCM
-  std::cout << "Sending WLCM to " << connection.getRemoteDomainName() << ":"
-    << connection.getRemotePort() << std::endl;
+  // Report sending WLCM message
+  std::cout << "\t- Sending WLCM packet to " << connection.getRemoteDomainName() << ":"
+      << connection.getRemotePort() << std::endl;
 
   // Make joining node our new predecessor
-  predecessor_.node_id = join_msg.node.id;
-  predecessor_.port = ntohs(join_msg.node.port);
-  predecessor_.ipv4 = ntohl(join_msg.node.ipv4);
+  predecessor_finger.node_id = join_msg.node.id;
+  predecessor_finger.remote.setRemotePort(ntohs(join_msg.node.port));
+  predecessor_finger.remote.setRemoteIpv4Address(ntohl(join_msg.node.ipv4));
 
   // Make joining node our successor too, if we were previously the 
   // only node in the network
   if (id_ == fingerTable_.front().node_id) {
-    fingerTable_.front().remote
-      .setRemotePort(predecessor_.port)
-      .setRemoteIpv4Address(predecessor_.ipv4);
+    finger_t& successor = fingerTable_.front();
+    uint8_t old_successor_id = successor.node_id; 
+
+    successor.node_id = predecessor_finger.node_id;
+    successor.remote
+      .setRemotePort(predecessor_finger.remote.getRemotePort())
+      .setRemoteIpv4Address(predecessor_finger.remote.getRemoteIpv4Address());
+
+    // Report that we've updated the successor
+    std::cout << "\t- Now replacing former successor with joining node..." <<
+        "\n\t\t- Id(old successor) : " << (int) old_successor_id <<
+        "\n\t\t- Id(new successor) : " << (int) successor.node_id << std::endl;
 
     // Fix table to reflect new node
     fixUp(0);
@@ -355,92 +528,223 @@ void DhtNode::handleJoinAcceptance(const dhtmsg_t& join_msg) {
 
   // Reload db because our identifer space has now changed
   reloadDb();
+
 }
 
-void DhtNode::handleUnexpectedJoinFailure(
+void DhtNode::handleUnexpectedJoinFailureAndClose(
   const dhtmsg_t& join_msg,
-  const Connection& dead_cxn
-) const {
+  const Connection& cxn
+) {
   // Assemble REDRT packet
   dhtmsg_t redrt_msg;
   redrt_msg.header = {DHTM_VERS, REDRT};
+
+  // Send back our current predecessor to the redirected node.
+  // The redirected node will make our predecessor its new successor
+  // and then try to forward the join across its finger table.
+  const finger_t& predecessor_finger = getPredecessor();
   
   dhtnode_t pred;
-  pred.id = predecessor_.node_id;
-  pred.port = htons(predecessor_.port);
-  pred.ipv4 = htonl(predecessor_.ipv4);
+  pred.id = predecessor_finger.node_id;
+  pred.port = htons(predecessor_finger.remote.getRemotePort());
+  pred.ipv4 = htonl(predecessor_finger.remote.getRemoteIpv4Address());
   redrt_msg.node = pred;
+  
+  // Send packet to sender (not neccessarily node that initiated join request)
   std::string redrt_str((char *) &redrt_msg, sizeof(redrt_msg));
 
-  // Send packet to sender (not neccessarily node that initiated join request)
-  ServerBuilder builder;
-  Connection sender = builder
-    .setRemotePort(dead_cxn.getRemotePort())
-    .setRemoteIpv4Address(dead_cxn.getRemoteIpv4())
-    .build();
-
-  sender.writeAll(redrt_str);
-  sender.close();
+  cxn.writeAll(redrt_str);
+  cxn.close();
 
   // Report unexpected join failure
-  std::cout << "Sending REDRT packet to " << sender.getRemoteDomainName() << ":"
-    << (int) sender.getRemotePort() << "." << std::endl;
+  std::cout << "\t- Sending REDRT packet to " << cxn.getRemoteDomainName() << ":"
+    << (int) cxn.getRemotePort() << "." << std::endl;
 }
 
-void DhtNode::forwardJoin(const dhtmsg_t& join_msg) const {
+void DhtNode::forwardJoin(dhtmsg_t join_msg) {
+  // Fail b/c this is not a JOIN packet
+  assert(join_msg.header.type == JOIN || join_msg.header.type == JOIN_ATLOC);
+
+  // Kill join request if ttl has run out
+  if (--join_msg.ttl) {
+    return;
+  }
+
+  // Check if the join message falls in the range of our successor 
+  if (inSuccessorsPurview(join_msg)) {
+    // Send to successor and indicate that we expect the sender to have
+    // the target id in its purview
+    forwardJoinToSuccessor(join_msg);
+
+  } else {
+    // Find next best finger to forward the join request to
+    size_t finger_idx = findFingerForForwarding(join_msg.node.id);
+    
+    // Fail b/c finger idx is out of bounds
+    assert(finger_idx < fingerTable_.size() - 1);
+
+    const finger_t& target_finger = fingerTable_.at(finger_idx);   
+
+    // Report that we're forwarding the join request and that we don't necessarily
+    // expect the target finger to accept the join
+    std::cout << "\t- Forwarding JOIN to finger[" << finger_idx << "]:" <<
+        "<id: " << (int) target_finger.node_id <<
+        ", port: " << (int) target_finger.remote.getRemotePort() <<
+        ", ipv4: " << stringifyIpv4(htonl(target_finger.remote.getRemoteIpv4Address())) << 
+        ">. We do NOT necessarily expect success..." << std::endl;
    
+    // Forward join request to target finger
+    forwardJoinToFinger(join_msg, target_finger);
+  }
 }
 
 void DhtNode::reloadDb() {}
 
-void DhtNode::handleRedrt(const dhtmsg_t& msg, const Connection& dead_cxn) {
+void DhtNode::handleRedrt(
+  const dhtmsg_t& redrt_pkt,
+  const dhtmsg_t& join_pkt,
+  size_t finger_idx
+) {
+  // Fail b/c 'finger_idx' is out of bounds
+  assert(finger_idx < fingerTable_.size() - 1);
 
+  // Fail b/c header of redrt-packet is not REDRT
+  assert(redrt_pkt.header.type == REDRT);
+
+  // Fail b/c header of join-packet is not JOIN_ATLOC
+  assert(join_pkt.header.type == JOIN_ATLOC);
+  
+  // Report REDRT packet received
+  std::cout << "\t- Received REDRT packet providing new successor: " <<
+      "<id: " << (int) redrt_pkt.node.id << 
+      ", port: " << (int) ntohs(redrt_pkt.node.port) << 
+      ", ipv4: " << stringifyIpv4(redrt_pkt.node.ipv4) << ">" << std::endl;
+
+  finger_t& finger = fingerTable_.at(finger_idx);
+
+  // Report old finger we're replacing
+  std::cout << "\t- Reconfiguring finger[" << finger_idx << "]\n\t\t- From " <<
+      "<id: " << (int) finger.node_id << 
+      ", port: " << (int) finger.remote.getRemotePort() << 
+      ", ipv4: " << stringifyIpv4(htonl(finger.remote.getRemoteIpv4Address())) << 
+      ">" << std::endl;
+
+  // Reassign finger to provided node 
+  finger.node_id = redrt_pkt.node.id;
+  finger.remote.setRemotePort(ntohs(redrt_pkt.node.port));
+  finger.remote.setRemoteIpv4Address(ntohl(redrt_pkt.node.ipv4));
+
+  // Report new finger that we're replacing the old one with 
+  std::cout << "\n\t\t- To " <<
+      "<id: " << (int) finger.node_id << 
+      ", port: " << (int) finger.remote.getRemotePort() << 
+      ", ipv4: " << stringifyIpv4(htonl(finger.remote.getRemoteIpv4Address())) << 
+      ">" << std::endl;
+
+  // Reload db
+  reloadDb();
+
+  // Fix finger table
+  fixUp(0);
+
+  // Forward join back to network
+  forwardJoin(join_pkt);
 }
 
-void DhtNode::handleReid(const dhtmsg_t& msg, const Connection& connection) {
+void DhtNode::handleReid() {
+  // Report that we're generating a new id
+  std::cout << "\t- Restarting dht socket and generating new id..." << std::endl;
 
+  // Close receiver socket and create a new one
+  close();
+  initReceiver();
+
+  // Derive a new id from the new address+port of the new 
+  // receiving socket and recompute fingers
+  deriveId();
+  initFingers();
+
+  reportId();
+ 
+  // Retry join
+  sendJoinRequest();
 }
 
 void DhtNode::handleWlcmAndCloseCxn(
   const dhtmsg_t& msg,
   const Connection& connection
 ) {
+ 
+  // Read predecessor dhtnode_t from wire
+  dhtnode_t pred;
+  size_t pred_size = sizeof(pred);
 
+  connection.readAll((void *) &pred, pred_size);
+  connection.close();
+
+  const dhtnode_t& succ = msg.node;
+
+  // Report WLCM message w/successor/predecessor data
+  std::cout << "\t- We've been welcomed into the DHT! Here are our new predecessor/successor nodes:" <<
+      "\n\t\t- Predecessor: <id: " << (int) pred.id << ", port: " << 
+      (int) ntohs(pred.port) << ", ipv4: " << stringifyIpv4(pred.ipv4) << 
+      ">\n\t\t- Successor: <id: " << (int) succ.id << ", port: " << 
+      (int) ntohs(succ.port) << ", ipv4: " << stringifyIpv4(succ.ipv4) << ">" << std::endl;
+
+  // Assimilate provided predecessor/successor
+  finger_t& predecessor_finger = getPredecessor();
+  predecessor_finger.node_id = pred.id;
+  predecessor_finger.remote.setRemotePort(ntohs(pred.port));
+  predecessor_finger.remote.setRemoteIpv4Address(ntohl(pred.ipv4));
+
+  finger_t& successor_finger = fingerTable_.front();
+  successor_finger.node_id = succ.id;
+  successor_finger.remote
+    .setRemotePort(ntohs(succ.port))
+    .setRemoteIpv4Address(ntohl(succ.ipv4));
+
+  // Reload db
+  reloadDb();
+
+  // Fix finger table
+  fixUp(0);
+  fixDown(fingerTable_.size() - 1);
 }
 
 void DhtNode::handleSrch(const dhtmsg_t& msg, const Connection& connection) {
+  std::cout << "HANDLE srch DIE" << std::endl; 
+  exit(1);
 
 }
 
 bool DhtNode::doesJoinCollide(const dhtmsg_t& join_msg) const {
-  return predecessor_.node_id == join_msg.node.id || id_ == join_msg.node.id;  
+  return getPredecessor().node_id == join_msg.node.id || id_ == join_msg.node.id;  
 }
 
-bool DhtNode::canJoin(const dhtmsg_t& join_msg) const {
-  return ID_inrange(join_msg.node.id, predecessor_.node_id, id_);
+bool DhtNode::inOurPurview(const dhtmsg_t& join_msg) const {
+  return ID_inrange(join_msg.node.id, getPredecessor().node_id, id_);
+}
+
+bool DhtNode::inSuccessorsPurview(const dhtmsg_t& join_msg) const {
+  const finger_t& successor_finger = fingerTable_.front();
+  return ID_inrange(join_msg.node.id, id_, successor_finger.node_id);
 }
 
 bool DhtNode::senderExpectedJoin(const dhtmsg_t& join_msg) const {
   return JOIN_ATLOC == join_msg.header.type;
 }
 
-void DhtNode::reportDhtMsg(
-  const dhtmsg_t& dhtmsg,
-  const Connection& connection) const 
-{
-  std::cout <<
-    "Received " << getDhtTypeString(static_cast<DhtType>(dhtmsg.header.type)) <<
-    " from " << connection.getRemoteDomainName() << ":" << (int) connection.getRemotePort() <<
-    "\n\t- ttl: " << (int) ntohs(dhtmsg.ttl) << 
-    "\n\t- id: " << (int) dhtmsg.node.id << 
-    "\n\t- port: " << (int) ntohs(dhtmsg.node.port) << 
-    "\n\t- ipv4: " << (int) ntohl(dhtmsg.node.ipv4) << std::endl;
+void DhtNode::reportDhtMsgReceived(const dhtmsg_t& dhtmsg) const {
+  std::cout << "Received " << getDhtTypeString(static_cast<DhtType>(dhtmsg.header.type))
+      << " message!" << std::endl;
 }
 
 std::string DhtNode::getDhtTypeString(DhtType type) const {
   switch (type) {
     case JOIN:
       return JOIN_STR;
+    case JOIN_ATLOC:
+      return JOIN_ATLOC_STR;
     case REDRT:
       return REDRT_STR;
     case REID:
@@ -459,13 +763,13 @@ void DhtNode::reportId() const {
   std::cout << "DhtNode ID: " << (int) id_ << std::endl;
 }
 
-DhtNode::DhtNode(uint8_t id) : id_(id) {
+DhtNode::DhtNode(uint8_t id) : id_(id), hasTarget_(false) {
   initReceiver();
   initFingers();
   reportId();
 }
 
-DhtNode::DhtNode() {
+DhtNode::DhtNode() : hasTarget_(false) {
   initReceiver();
   deriveId();
   initFingers();
@@ -473,40 +777,16 @@ DhtNode::DhtNode() {
 }
 
 void DhtNode::joinNetwork(const std::string& fqdn, uint16_t port) {
-  // Assemble header packet 
-  dhtheader_t header = {DHTM_VERS, DHTM_JOIN};
-  
-  // Assemble 'self' packet 
-  dhtnode_t self;
-  self.id = id_; // one byte, no host -> network converstion needed!
-  self.port = htons(receiver_->getPort());
-  self.ipv4 = htonl(receiver_->getIpv4());
+  // Fail b/c target should not have been specified before this
+  assert(!hasTarget_);
 
-  // Assemble join packet
-  dhtmsg_t dhtmsg = {header, htons(DHTM_TTL), self};
-  const std::string message((const char *) &dhtmsg, sizeof(dhtmsg));
+  // Set target node
+  hasTarget_ = true;
+  targetFqdn_ = fqdn;
+  targetPort_ = port;
 
-  std::cout << "Sent JOIN to " << fqdn << ":" << (int) port <<
-    "\n\t- ttl: " << (int) ntohs(dhtmsg.ttl) << 
-    "\n\t- id: " << (int) dhtmsg.node.id << 
-    "\n\t- port: " << (int) ntohs(dhtmsg.node.port) << 
-    "\n\t- ipv4: " << (int) ntohl(dhtmsg.node.ipv4) << std::endl;
-
-  // Connect to DHT network through specified target
-  ServerBuilder builder; 
-  const Connection remote = builder
-    .setRemoteDomainName(fqdn)
-    .setRemotePort(port)
-    .build();
-
-  // Send join message to first network node and close connection
-  try {
-    remote.writeAll(message);
-    remote.close();
-  } catch (const SocketException& e) {
-    std::cout << "Failed while writing data to first target!" << std::endl;
-    exit(1);
-  }
+  // Attempt to join target
+  sendJoinRequest();
 }
 
 void DhtNode::run() {
