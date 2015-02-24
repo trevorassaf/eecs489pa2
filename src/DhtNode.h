@@ -224,18 +224,26 @@ class DhtNode {
         const dhtmsg_t& redrt_pkt,
         const dhtmsg_t& join_pkt,
         size_t finger_idx);
+
+    /**
+     * handleRedrt()
+     * - Assimilate provided finger into finger table.
+     * @param redrt_pkt : redirect packet received from peer finger
+     * @param finger_idx : index of finger to replace
+     */
+    void handleRedrt(const dhtmsg_t& redrt_pkt, size_t finger_idx);
     
     /**
-     * handleSearchRedrt()
+     * handleSrchRedrt()
      * - Make provded node our new successor and forward the original
      *   join request to the successor.
      * @param redrt_pkt : redirect packet that we received (network-byte-order)
-     * @param join_pkt : join packet that we sent (network-byte-order)
+     * @param srch_pkt : search packet that we sent (network-byte-order)
      * @param finger_idx : index of finger that we sent join to
      */
-    void handleSearchRedrt(
+    void handleSrchRedrt(
         const dhtmsg_t& redrt_pkt,
-        const dhtmsg_t& join_pkt,
+        const dhtsrch_t& srch_pkt,
         size_t finger_idx);
 
     /**
@@ -384,13 +392,15 @@ class DhtNode {
     /**
      * forwardInitialImageQueryToDht()
      * - Send image query along fingers in dht.
+     * - CAUTION: used for first image forward ONLY
      * @param file_name : name of image file
      */
     void forwardInitialImageQuery(const std::string& file_name);
     
     /**
      * forwardImageQueryToDht()
-     * - Send image query along fingers in dht.
+     * - Send image query along fingers in dht. May be used for either
+     *   initial forward or secondary forwards.
      * @param srch_pkt : packet containing search query 
      */
     void forwardImageQuery(dhtsrch_t& srch_pkt);

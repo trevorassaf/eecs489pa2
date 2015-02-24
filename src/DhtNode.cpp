@@ -296,12 +296,12 @@ bool DhtNode::handleCliInput() {
 
 void DhtNode::handleImageTraffic() {
 
-  // Accept connection from client
+  // Accept connection from netimg client
   const Connection * cxn = imageReceiver_->acceptNew();
   
   // Report that we're processing image traffic
-  std::cout << "Netimg request received! Client: <" << cxn->getRemoteIpv4() << 
-      ":" << cxn->getRemotePort() << ">" << std::endl;
+  std::cout << "Netimg request received! Procesing image traffic from <" << 
+      cxn->getRemoteIpv4() << ":" << cxn->getRemotePort() << ">" << std::endl;
 
   // Read message from netimg client
   iqry_t message;
@@ -319,17 +319,19 @@ void DhtNode::handleImageTraffic() {
   // Block other requests until this one is finished
   servicingImageQuery_ = true;
 
-  // Query local db
+  // Query local db for the requested image
   const std::string file_name(message.name);
   QueryResult result = imageDb_->query(file_name);
 
   switch (result) {
+    //// IMAGE IS LOCAL -> FORWARD TO CLIENT ////
     case QUERY_SUCCESS:
       // Report image found locally
       std::cout << "\t- Image found locally!" << std::endl;
       handleLocalQuerySuccess(file_name, cxn);
       return;
 
+    //// IMAGE IS NOT LOCAL -> QUERY DHT  -> FORWARD TO CLIENT ////
     case BLOOM_FILTER_MISS:
       // Report bloom filter miss
       std::cout << "\t- Image NOT found locally -- bloom filter false positive!" << std::endl;
@@ -343,10 +345,11 @@ void DhtNode::handleImageTraffic() {
       std::cout << "Invalid QueryResult type" << std::endl;
       exit(1);
   }
-
-  // Cache connection, re-use when we get a response for the query 
-  imageClient_ = cxn;
   
+  // Cache connection so that we can send back to the netimg client
+  // when we find the image
+  imageClient_ = cxn;
+
   // Forward packet to dht
   forwardInitialImageQuery(file_name);   
 }
@@ -356,22 +359,26 @@ void DhtNode::forwardInitialImageQuery(const std::string& file_name) {
   // Fail b/c we should be in the 'servicing query' state
   assert(servicingImageQuery_);
 
+  // Fail b/c we should have a valid image-client
+  assert(imageClient_);
+
   // Report that we're forwarding the image query over the dht
-  std::cout << "\t- Forwarding the image query to the DHT!" << std::endl;
+  std::cout << "\t- Forwarding image query to the DHT!" << std::endl;
 
   // Assemble dhtsrch_t packet
   dhtsrch_t srch_pkt;
   srch_pkt.msg.header = {DHTM_VERS, DHTM_QRY};
 
   // Provide our dht receiver as the node to connect to when
-  // the image is found
+  // the image is found. We will listen for a response on this socket
+  // and stream down the result once the DHT provides one.
   dhtnode_t self;
   self.id = id_;
   self.port = htons(dhtReceiver_->getPort());
   self.ipv4 = htons(dhtReceiver_->getIpv4());
   srch_pkt.msg.node = self;
 
-  // Add image query details
+  // Add image query details to packet
   unsigned char md[SHA1_MDLEN];
   SHA1((unsigned char *) file_name.c_str(), file_name.size(), md);
 
@@ -384,7 +391,7 @@ void DhtNode::forwardInitialImageQuery(const std::string& file_name) {
 }
 
 void DhtNode::forwardImageQuery(dhtsrch_t& srch_pkt) {
-
+  
   // Select finger to forward the search to
   size_t finger_idx = findFingerForForwarding(srch_pkt.img_id);
   
@@ -393,17 +400,23 @@ void DhtNode::forwardImageQuery(dhtsrch_t& srch_pkt) {
 
   const finger_t& target_finger = fingerTable_.at(finger_idx);   
 
+  // Fail b/c we shouldn't be forwarding to ourselves
+  assert(target_finger.node_id != id_);
+
   // Fail b/c a non-search packet made it into this function
   assert(srch_pkt.msg.header.type == SRCH 
       || srch_pkt.msg.header.type == SRCH_ATLOC); 
   
-  // Set ATLOC bit, if we expect to find the object at the finger 
+  // Set ATLOC bit, if we expect to find the object at the finger that 
+  // we're forwarding the image query to
   srch_pkt.msg.header.type = (expectToFindObject(srch_pkt.img_id, target_finger))
       ? SRCH_ATLOC
       : SRCH;
+  
+  // Serialize image query packet
+  std::string message((const char *) &srch_pkt, sizeof(srch_pkt));
 
-  // Report that we're forwarding the search request and that we don't necessarily
-  // expect the target finger to have the image 
+  // Report that we're forwarding the search request
   std::cout << "\t- Forwarding SRCH to finger[" << finger_idx << "]:" <<
       "<id: " << (int) target_finger.node_id <<
       ", port: " << (int) target_finger.remote.getRemotePort() <<
@@ -411,25 +424,19 @@ void DhtNode::forwardImageQuery(dhtsrch_t& srch_pkt) {
       ", type: " << getDhtTypeString(static_cast<DhtType>(srch_pkt.msg.header.type)) << 
       ">." << std::endl;
 
-  // Fail b/c we shouldn't be forwarding to ourselves
-  assert(target_finger.node_id != id_);
-  
-  // Open connection to target finger and send message
-  std::string message((const char *) &srch_pkt, sizeof(srch_pkt));
-
-  Connection remote = target_finger.remote.build();
-
   try {
+    // Forward packet to target finger
+    Connection remote = target_finger.remote.build();
     remote.writeAll(message);
 
     if (srch_pkt.msg.header.type == JOIN_ATLOC) {
       // Wait for REDRT packet or for a closed connection. Remote will send REDRT
       // if it doesn't have the purview that we expected it to have. Conversely,
       // the remote will close the connection if it does accept the join request.
-      try {
-        dhtmsg_t redrt_pkt;  
-        size_t redrt_pkt_size = sizeof(redrt_pkt);
+      dhtmsg_t redrt_pkt;  
+      size_t redrt_pkt_size = sizeof(redrt_pkt);
 
+      try {
         // Try to read REDRT packet
         remote.readAll( (void *) &redrt_pkt, redrt_pkt_size);
         remote.close();
@@ -462,26 +469,32 @@ void DhtNode::handleLocalQuerySuccess(
   // Report that we're sending the image down to the client
   std::cout << "\t- Streaming image down to client!" << std::endl;
 
-  // Load image
+  // Load image into memory
   LTGA ltga(file_name);
 
   // Assemble imsg_t packet, then serialize
   imsg_t message;
   message.header = {NETIMG_VERS, FOUND};
   size_t image_size = (size_t) loadImsgPacket(ltga, message);
+  
   std::string message_str( (char *) &message, sizeof(message));
  
-  // Send image header packet
+  // Send image meta data to netimg client
   cxn->writeAll(message_str);
 
-  // Assemble image packet proper and send
+  // Assemble image pixel payload and send to client
   std::string image_str( (char *) ltga.GetPixels(), image_size);
 
   cxn->writeAll(image_str);
   cxn->close();
+  delete cxn;
 
   // Make this node available to service other image queries
   servicingImageQuery_ = false;
+
+  // Report that we can service other netimg queries again
+  std::cout << "\t- Finished servicing query, we can now service additional queries!"
+      << std::endl;
 }
 
 size_t DhtNode::loadImsgPacket(LTGA& curimg, imsg_t& imsg) const {
@@ -837,6 +850,14 @@ void DhtNode::forwardJoin(dhtmsg_t join_msg) {
 void DhtNode::reloadDb() {
   const finger_t& predecessor = getPredecessor();
   imageDb_->load(predecessor.node_id, id_);
+}
+
+void DhtNode::handleSrchRedrt(
+  const dhtmsg_t& redrt_pkt,
+  const dhtsrch_t& srch_pkt,
+  size_t finger_idx
+) {
+
 }
 
 void DhtNode::handleJoinRedrt(
