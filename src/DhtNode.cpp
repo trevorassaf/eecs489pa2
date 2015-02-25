@@ -9,6 +9,12 @@
 #include <GL/glut.h>
 #endif
 
+void dumpSrchPacket(const dhtsrch_t& pkt) {
+  std::cout << "--- SEARCH PACKET DUMP: <id: " << (int) pkt.msg.node.id 
+     << ", port: " << (int) ntohs(pkt.msg.node.port) <<
+     ", ipv4: " << (int) ntohl(pkt.msg.node.ipv4) << std::endl;
+}
+
 void DhtNode::initFingers() {
   // Finger table should hold only FINGER_TABLE_SIZE fingers
   fingerTable_ = std::vector<finger_t>(FINGER_TABLE_SIZE + 1);
@@ -122,8 +128,12 @@ const DhtNode::finger_t& DhtNode::getPredecessor() const {
 
 size_t DhtNode::findFingerForForwarding(uint8_t object_id) const {
   size_t limit = fingerTable_.size() - 1;
-  size_t idx = 0;
-  
+  size_t idx = 1;
+
+  if (ID_inrange(object_id, id_, fingerTable_.front().finger_id)) {
+    return 0;
+  }
+ 
   while (idx < limit) {
     const finger_t& finger = fingerTable_.at(idx);
     
@@ -413,7 +423,7 @@ void DhtNode::forwardInitialImageQuery(const std::string& file_name) {
 
   // Assemble dhtsrch_t packet
   dhtsrch_t srch_pkt;
-  srch_pkt.msg.header = {DHTM_VERS, DHTM_QRY};
+  srch_pkt.msg.header = {DHTM_VERS, DHTM_SRCH};
 
   // Provide our dht receiver as the node to connect to when
   // the image is found. We will listen for a response on this socket
@@ -469,6 +479,8 @@ void DhtNode::forwardImageQueryWithoutTtl(dhtsrch_t srch_pkt) {
       ? SRCH_ATLOC
       : SRCH;
   
+  dumpSrchPacket(srch_pkt);
+
   // Serialize image query packet
   std::string message((const char *) &srch_pkt, sizeof(srch_pkt));
 
@@ -493,8 +505,10 @@ void DhtNode::forwardImageQueryWithoutTtl(dhtsrch_t srch_pkt) {
       size_t redrt_pkt_size = sizeof(redrt_pkt);
 
       try {
+        std::cout << "WAITING FOR REDRT OR SOCKET CLOSE" << std::endl;
         // Try to read REDRT packet
         remote.readAll( (void *) &redrt_pkt, redrt_pkt_size);
+        std::cout << "RECEIVED REDRT" << std::endl;
         remote.close();
 
         // Handle REDRT pkt
@@ -1010,8 +1024,12 @@ void DhtNode::handleSrchAndCloseCxn(
   const Connection& connection
 ) {
 
+  // Fail due to incorrect message type
+  assert(msg.header.type == SRCH || msg.header.type == SRCH_ATLOC);
+
   // Read remainder of search packet
   dhtsrch_t srch_pkt;
+  srch_pkt.msg = msg;
   
   connection.readAll((void *) &srch_pkt.img, sizeof(dhtimg_t));
  
@@ -1027,19 +1045,19 @@ void DhtNode::handleSrchAndCloseCxn(
     //// IMAGE IS LOCAL -> FORWARD TO DHT PROXY ////
     case QUERY_SUCCESS:
       // Report image found locally
-      std::cout << "\t- Image found locally!" << std::endl;
-      handleRemoteImageQuerySuccess(srch_pkt);
+      std::cout << "\t- Image found!" << std::endl;
       connection.close();
+      handleRemoteImageQuerySuccess(srch_pkt);
       return;
 
     //// IMAGE IS NOT LOCAL -> FORWARD TO DHT OR SQUASH ////
     case BLOOM_FILTER_MISS:
       // Report bloom filter miss
-      std::cout << "\t- Image NOT found locally -- bloom filter false positive!" << std::endl;
+      std::cout << "\t- Image NOT found (bloom filter false positive)" << std::endl;
       break;
 
     case QUERY_FAILURE:
-      std::cout << "\t- Image NOT found locally -- not in bloom filter" << std::endl;
+      std::cout << "\t- Image NOT found (not in bloom filter either)" << std::endl;
       break;
 
     default:
@@ -1073,7 +1091,9 @@ void DhtNode::handleRemoteImageQuerySuccess(const dhtsrch_t& srch_pkt) {
  
   // Report that we're notifying the dht image proxy that we've found
   // the image
-  std::cout << "\t- Returning image to DHT image proxy..." << std::endl;
+  std::cout << "\t- Transferring file to original DHT node..." << std::endl;
+
+  dumpSrchPacket(srch_pkt);
 
   // Assemble packet indicating 'image-found'
   dhtsrch_t image_found_pkt;
