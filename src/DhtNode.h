@@ -16,6 +16,9 @@
 #include "ltga.h"
 
 #define FINGER_TABLE_SIZE 8
+#define SUCCESSOR_IDX 0
+#define PREDECESSOR_IDX FINGER_TABLE_SIZE
+
 #define NUM_IDS 0x100 // 2^FINGER_TABLE_SIZE
 #define SIZE_OF_ADDR_PORT 6
 
@@ -27,6 +30,8 @@
 #define WLCM_STR "WLCM"
 #define SRCH_STR "SRCH"
 #define SRCH_ATLOC_STR "SRCH_ATLOC"
+#define RPLY_STR "RPLY"
+#define MISS_STR "MISS"
 
 class DhtNode {
 
@@ -298,14 +303,6 @@ class DhtNode {
     void handleWlcmAndCloseCxn(const dhtmsg_t& msg, const Connection& connection);
 
     /**
-     * handleSrch()
-     * - Read and process join message request
-     * @param msg : packet from the network (network-byte-order)
-     * @param connection : connection to requesting node
-     */
-    void handleSrch(const dhtmsg_t& msg, const Connection& connection);
-
-    /**
      * doesJoinCollide()
      * - Test if the id of the joining node collides with the
      *   id of the current node or that of its predecessor.
@@ -378,13 +375,6 @@ class DhtNode {
 
     /**
      * getPredecessor()
-     * - Return reference to predecessor finger.
-     * @return predecessor finger. 
-     */
-    finger_t& getPredecessor();
-    
-    /**
-     * getPredecessor()
      * - Return reference to predecessor finger. Here to allow const reads.
      * @return predecessor finger. 
      */
@@ -415,6 +405,14 @@ class DhtNode {
      * @return ipv4 address in dotted decimal form
      */
     const std::string stringifyIpv4(uint32_t ipv4) const;
+
+    /**
+     * stringifyFinger()
+     * - Transform finger to human-readable format.
+     * @param finger : finger to stringify
+     * @return string representation of finger
+     */
+    const std::string stringifyFinger(const finger_t& finger) const;
 
     /**
      * rejectNetimgQuery()
@@ -462,8 +460,46 @@ class DhtNode {
      */
     void forwardImageQueryWithoutTtl(dhtsrch_t srch_pkt);
 
+    /**
+     * stringifySrchPkt()
+     * - Convert search packet to human-readable format.
+     * @param pkt : search packet
+     */
+    const std::string stringifySrchPkt(const dhtsrch_t& pkt) const;
+  
+    /**
+     * updatePredecessorAndImageDb()
+     * - Change predecessor to provided node. Reload the image database.
+     * @param id: id of new predecessor
+     * @param port: port of new predecessor (host-byte-order)
+     * @param ipv4: ipv4 address of new predecessor (host-byte-order)
+     */
+    void updatePredecessorAndImageDb(uint8_t id, uint16_t port, uint32_t ipv4);
+
+    /**
+     * updateSuccessor()
+     * - Change successor to provided node.
+     * @param id: id of new successor 
+     * @param port: port of new successor (host-byte-order)
+     * @param ipv4: ipv4 address of new successor (host-byte-order)
+     */
+    void updateSuccessor(uint8_t id, uint16_t port, uint32_t ipv4);
+
+    /**
+     * updateFinger()
+     * - Update the finger table with the new entry. 
+     * - Fixes the finger table, as needed.
+     * @param idx: index in the finger to update
+     * @param id: id of the new finger
+     * @param port: port of the new finger (host-byte-order)
+     * @param ipv4: ipv4 address of the new finger (host-byte-order)
+     */
+    void updateFinger(size_t idx, uint8_t id, uint16_t port, uint32_t ipv4);
+
     // TODO remove!
     void printFingers() const;
+    void dumpSrchPacket(const dhtsrch_t& pkt);
+
 
   public:
     /**

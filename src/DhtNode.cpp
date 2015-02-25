@@ -9,10 +9,24 @@
 #include <GL/glut.h>
 #endif
 
-void dumpSrchPacket(const dhtsrch_t& pkt) {
+const std::string DhtNode::stringifySrchPkt(const dhtsrch_t& pkt) const {
+  // Fail b/c this isn't a search packet
+  assert(pkt.msg.header.type == SRCH || pkt.msg.header.type == SRCH_ATLOC);
+
+  std::string pkt_str = "<id: ";
+  pkt_str += std::to_string((int) pkt.msg.node.id);
+  pkt_str += ", port: " + std::to_string(ntohs(pkt.msg.node.port));
+  pkt_str += ", ipv4: " + stringifyIpv4(pkt.msg.node.ipv4);
+  pkt_str += ", type: " + std::to_string((int) pkt.msg.header.type);
+  pkt_str += ">";
+
+  return pkt_str;
+}
+
+void DhtNode::dumpSrchPacket(const dhtsrch_t& pkt) {
   std::cout << "--- SEARCH PACKET DUMP: <id: " << (int) pkt.msg.node.id 
      << ", port: " << (int) ntohs(pkt.msg.node.port) <<
-     ", ipv4: " << (int) ntohl(pkt.msg.node.ipv4) << std::endl;
+     ", ipv4: " << stringifyIpv4(pkt.msg.node.ipv4) << std::endl;
 }
 
 void DhtNode::initFingers() {
@@ -21,7 +35,7 @@ void DhtNode::initFingers() {
   for (size_t i = 0; i < FINGER_TABLE_SIZE; ++i) {
   uint16_t unfolded_finger_id = (1 << i) + id_; 
     
-    // Build finger pointing to *self*
+    // Build finger pointing to *self*, initialize with garbage port/ipv4
     finger_t finger;
     finger.finger_id = foldId(unfolded_finger_id);
     finger.node_id = id_;
@@ -30,7 +44,7 @@ void DhtNode::initFingers() {
   }
 
   // Initialize predecessor to point to ourself
-  finger_t& predecessor = getPredecessor();
+  finger_t& predecessor = fingerTable_[PREDECESSOR_IDX];
   predecessor.node_id = id_;
   predecessor.remote
       .setRemotePort(dhtReceiver_->getPort())
@@ -116,10 +130,6 @@ void DhtNode::sendJoinRequest() {
     std::cout << "Failed while writing data to first target!" << std::endl;
     exit(1);
   }
-}
-
-DhtNode::finger_t& DhtNode::getPredecessor() {
-  return fingerTable_.back();
 }
 
 const DhtNode::finger_t& DhtNode::getPredecessor() const {
@@ -320,7 +330,7 @@ void DhtNode::handleImageTraffic() {
   const Connection * cxn = imageReceiver_->acceptNew();
   
   // Report that we're processing image traffic
-  std::cout << "Netimg request received! Procesing image traffic from <" << 
+  std::cout << "\nReceived QRY request from netimg client: <" << 
       cxn->getRemoteDomainName() << ":" << cxn->getRemotePort() << ">" << std::endl;
 
   // Read message from netimg client
@@ -431,8 +441,9 @@ void DhtNode::forwardInitialImageQuery(const std::string& file_name) {
   dhtnode_t self;
   self.id = id_;
   self.port = htons(dhtReceiver_->getPort());
-  self.ipv4 = htons(dhtReceiver_->getIpv4());
+  self.ipv4 = htonl(dhtReceiver_->getIpv4());
   srch_pkt.msg.node = self;
+
 
   // Add image query details to packet
   unsigned char md[SHA1_MDLEN];
@@ -479,17 +490,18 @@ void DhtNode::forwardImageQueryWithoutTtl(dhtsrch_t srch_pkt) {
       ? SRCH_ATLOC
       : SRCH;
   
-  dumpSrchPacket(srch_pkt);
 
   // Serialize image query packet
   std::string message((const char *) &srch_pkt, sizeof(srch_pkt));
 
+  // Report srch packet contents
+  std::cout << "\t- Search packet: " << stringifySrchPkt(srch_pkt) << std::endl;
+
   // Report that we're forwarding the search request
-  std::cout << "\t- Forwarding SRCH to finger[" << finger_idx << "]:" <<
+  std::cout << "\t- Forwarding SRCH to finger[" << finger_idx << "]: " <<
       "<id: " << (int) target_finger.node_id <<
       ", port: " << (int) target_finger.remote.getRemotePort() <<
       ", ipv4: " << stringifyIpv4(htonl(target_finger.remote.getRemoteIpv4Address())) << 
-      ", type: " << getDhtTypeString(static_cast<DhtType>(srch_pkt.msg.header.type)) << 
       ">." << std::endl;
 
   try {
@@ -669,17 +681,10 @@ void DhtNode::handleJoinAndCloseCxn(
     cxn.close();
    
     // Report that we've accepted the join 
-    std::cout << "\t- We've accepted the remote's join request!" << std::endl;
+    std::cout << "\t- Join request accepted!" << std::endl;
 
     // Accept join request, make requester new predecessor
-    const finger_t& predecessor_finger = getPredecessor();
-    uint8_t old_predecessor_id = predecessor_finger.node_id;
     handleJoinAcceptance(join_msg);
-    
-    // Report successful join
-    std::cout << "\t- Now replacing former predecessor with joining node..." << 
-        "\n\t\t- Id(old predecessor) : " << (int) old_predecessor_id <<
-        "\n\t\t- Id(new predecessor) : " << (int) predecessor_finger.node_id << std::endl;
 
   } else {
     // Report failed JOIN attempt
@@ -762,16 +767,17 @@ void DhtNode::handleJoinAcceptance(const dhtmsg_t& join_msg) {
   wlcm.msg.node = self;
 
   // Make our current predecessor the predecessor of the joining node
+  const finger_t& predecessor_finger = getPredecessor();
+  
   dhtnode_t pred;
-  finger_t& predecessor_finger = getPredecessor();
   pred.id = predecessor_finger.node_id;
   pred.port = htons(predecessor_finger.remote.getRemotePort());
   pred.ipv4 = htonl(predecessor_finger.remote.getRemoteIpv4Address());
   wlcm.predecessor = pred;
 
+  // Send wlcm messsage to node that initiated the join
   std::string wlcm_str((char *) &wlcm, sizeof(wlcm));
 
-  // Send wlcm messsage to node that initiated the join
   ServerBuilder builder;
   Connection connection = builder
       .setRemotePort(ntohs(join_msg.node.port))
@@ -782,40 +788,32 @@ void DhtNode::handleJoinAcceptance(const dhtmsg_t& join_msg) {
   connection.close();
 
   // Report sending WLCM message
-  std::cout << "\t- Sending WLCM packet to " << connection.getRemoteDomainName() << ":"
-      << connection.getRemotePort() << std::endl;
+  std::cout << "\t- Sending WLCM packet to " << connection.getRemoteDomainName() << 
+    ":" << connection.getRemotePort() << std::endl;
+  
+  // Report that we're updating our predecessor
+  std::cout << "\t- Replacing former predecessor with joining node..." << std::endl;
 
-  // Make joining node our new predecessor
-  predecessor_finger.node_id = join_msg.node.id;
-  predecessor_finger.remote
-      .setRemotePort(ntohs(join_msg.node.port))
-      .setRemoteIpv4Address(ntohl(join_msg.node.ipv4));
-
-  // Fix table to reflect new predecessor
-  fixDown(fingerTable_.size() - 1);
+  // Make joining node our new predecessor (update) 
+  updatePredecessorAndImageDb(
+      join_msg.node.id,
+      ntohs(join_msg.node.port),
+      ntohl(join_msg.node.ipv4)
+  );
 
   // Make joining node our successor too, if we were previously the 
   // only node in the network
   if (id_ == fingerTable_.front().node_id) {
-    finger_t& successor = fingerTable_.front();
-    uint8_t old_successor_id = successor.node_id; 
+    // Report that we're replacing our current successor with a new one
+    std::cout << "\t- Now replacing former successor with joining node..." << std::endl;
 
-    successor.node_id = predecessor_finger.node_id;
-    successor.remote
-        .setRemotePort(predecessor_finger.remote.getRemotePort())
-        .setRemoteIpv4Address(predecessor_finger.remote.getRemoteIpv4Address());
-
-    // Report that we've updated the successor
-    std::cout << "\t- Now replacing former successor with joining node..." <<
-        "\n\t\t- Id(old successor) : " << (int) old_successor_id <<
-        "\n\t\t- Id(new successor) : " << (int) successor.node_id << std::endl;
-
-    // Fix table to reflect new successor
-    fixUp(0);
+    // Replace successor node 
+    updateSuccessor(
+        join_msg.node.id,
+        ntohs(join_msg.node.port),
+        ntohl(join_msg.node.ipv4)
+    );
   } 
-
-  // Reload db because our identifer space has now changed
-  reloadDb();
 }
 
 void DhtNode::sendRedrt(const Connection& cxn) {
@@ -919,7 +917,6 @@ void DhtNode::forwardJoin(dhtmsg_t join_msg) {
 }
 
 void DhtNode::handleRedrt(const dhtmsg_t& redrt_pkt, size_t finger_idx) {
- 
   // Fail b/c 'finger_idx' is out of bounds
   assert(finger_idx < fingerTable_.size() - 1);
 
@@ -927,44 +924,86 @@ void DhtNode::handleRedrt(const dhtmsg_t& redrt_pkt, size_t finger_idx) {
   assert(redrt_pkt.header.type == REDRT);
   
   // Report REDRT packet received
-  std::cout << "\t- Received REDRT packet providing new finger[" << finger_idx << ": " <<
+  std::cout << "\n\t- Received REDRT packet providing new finger[" << finger_idx << ": " <<
       "<id: " << (int) redrt_pkt.node.id << 
       ", port: " << (int) ntohs(redrt_pkt.node.port) << 
       ", ipv4: " << stringifyIpv4(redrt_pkt.node.ipv4) << ">" << std::endl;
 
-  finger_t& finger = fingerTable_.at(finger_idx);
-
-  // Report old finger we're replacing
-  std::cout << "\t- Reconfiguring finger[" << finger_idx << "]\n\t\t- From " <<
-      "<id: " << (int) finger.node_id << 
-      ", port: " << (int) finger.remote.getRemotePort() << 
-      ", ipv4: " << stringifyIpv4(htonl(finger.remote.getRemoteIpv4Address())) << 
-      ">" << std::endl;
-
-  // Reassign finger to provided node 
-  finger.node_id = redrt_pkt.node.id;
-  finger.remote
-    .setRemotePort(ntohs(redrt_pkt.node.port))
-    .setRemoteIpv4Address(ntohl(redrt_pkt.node.ipv4));
-
-  // Report new finger that we're replacing the old one with 
-  std::cout << "\t\t- To " <<
-      "<id: " << (int) finger.node_id << 
-      ", port: " << (int) finger.remote.getRemotePort() << 
-      ", ipv4: " << stringifyIpv4(htonl(finger.remote.getRemoteIpv4Address())) << 
-      ">" << std::endl;
-
-  // Fix finger table
-  fixUp(finger_idx);
-
-  if (finger_idx != 0) {
-    fixDown(finger_idx);
-  }
+  // Replace finger in our finger table with the provided one
+  updateFinger(
+      finger_idx,
+      redrt_pkt.node.id,
+      ntohs(redrt_pkt.node.port),
+      ntohl(redrt_pkt.node.ipv4));
 }
 
 void DhtNode::reloadDb() {
+  // Report that we're updating the image db
+  std::cout << "\t- Now reloading the image database..." << std::endl;
+ 
   const finger_t& predecessor = getPredecessor();
   imageDb_->load(predecessor.node_id, id_);
+}
+
+void DhtNode::updateFinger(size_t idx, uint8_t id, uint16_t port, uint32_t ipv4) {
+  // Fail b/c the indicated finger is invalid
+  assert(idx < fingerTable_.size());
+  
+  finger_t finger = fingerTable_.at(idx);
+
+  // Report that we're updating the finger
+  std::cout << "\t- Updating finger[" << idx << "] ";
+
+  switch (idx) {
+    case SUCCESSOR_IDX: 
+      std::cout << " (successor) ";
+      break;
+    case PREDECESSOR_IDX:
+      std::cout << " (predecessor) ";
+      break;
+  }
+
+  std::cout << "\n\t\t- Finger (old): " << stringifyFinger(finger);
+
+  // Make update
+  finger.node_id = id;
+  finger.remote
+    .setRemotePort(port)
+    .setRemoteIpv4Address(ipv4);
+
+  std::cout << "\n\t\t- Finger (new): " << stringifyFinger(finger) << std::endl;
+
+  // Fix finger table
+  if (idx) {
+    fixDown(idx);
+  }
+
+  if (idx < FINGER_TABLE_SIZE) {
+    fixUp(idx);
+  }
+}
+
+const std::string DhtNode::stringifyFinger(const finger_t& finger) const {
+  std::string finger_str = "<finger-id: ";
+  finger_str += std::to_string(finger.finger_id);
+  finger_str += ", node-id: " + std::to_string(finger.node_id);
+  finger_str += ", port: " + std::to_string(finger.remote.getRemotePort());
+  finger_str += ", ipv4: " + stringifyIpv4(htonl(finger.remote.getRemoteIpv4Address()));
+  finger_str += ">";
+
+  return finger_str;
+}
+
+void DhtNode::updatePredecessorAndImageDb(uint8_t id, uint16_t port, uint32_t ipv4) {
+  // Update finger
+  updateFinger(PREDECESSOR_IDX, id, port, ipv4);
+
+  // Reload the db
+  reloadDb();
+}
+
+void DhtNode::updateSuccessor(uint8_t id, uint16_t port, uint32_t ipv4) {
+  updateFinger(SUCCESSOR_IDX, id, port, ipv4);
 }
 
 void DhtNode::handleSrchRedrt(
@@ -1011,10 +1050,10 @@ void DhtNode::handleReid() {
   deriveId();
   initFingers();
   reportId();
+  
+  // Reload images because we've changed our identifier ring
+  reloadDb();
 
-  // Reload image db
-  imageDb_->load(id_, id_);
- 
   // Retry join
   sendJoinRequest();
 }
@@ -1034,7 +1073,7 @@ void DhtNode::handleSrchAndCloseCxn(
   connection.readAll((void *) &srch_pkt.img, sizeof(dhtimg_t));
  
   // Report that we've received an image query from the network
-  std::cout << "\t- Received SRCH packet from DHT network.\n" << 
+  std::cout << "\n\t- Received SRCH packet from DHT network.\n" << 
       "\t- Checking local db... " << std::endl;
 
   // Query local db for requested image
@@ -1091,13 +1130,12 @@ void DhtNode::handleRemoteImageQuerySuccess(const dhtsrch_t& srch_pkt) {
  
   // Report that we're notifying the dht image proxy that we've found
   // the image
-  std::cout << "\t- Transferring file to original DHT node..." << std::endl;
-
-  dumpSrchPacket(srch_pkt);
+  std::cout << "\t- Transferring file to DHT image proxy..." << std::endl;
 
   // Assemble packet indicating 'image-found'
   dhtsrch_t image_found_pkt;
   image_found_pkt.msg.header = {DHTM_VERS, RPLY};
+  image_found_pkt.img = srch_pkt.img;
 
   std::string payload( (char *) &image_found_pkt, sizeof(image_found_pkt));
 
@@ -1122,7 +1160,7 @@ void DhtNode::handleRplyAndCloseCxn(
   connection.close();
 
   // Report that we've received a RPLY message
-  std::cout << "\t- Received RPLY from DHT network. The image exists!" << std::endl;
+  std::cout << "\n\t- Received RPLY from DHT network. The image exists!" << std::endl;
 
   // Cache image
   imageDb_->cacheImage(srch_pkt.img.name); 
@@ -1143,7 +1181,7 @@ void DhtNode::handleMissAndCloseCxn(
   
   // Report that we're sending "image not found" message to the
   // querying netimg client
-  std::cout << "\t- Received MISS from DHT network. Looks like the image could not be found..." 
+  std::cout << "\n\t- Received MISS from DHT network. Looks like the image could not be found..." 
       << " Notifying netimg client..." << std::endl;
 
 
@@ -1156,6 +1194,8 @@ void DhtNode::handleWlcmAndCloseCxn(
   const dhtmsg_t& msg,
   const Connection& connection
 ) {
+  
+  const dhtnode_t& succ = msg.node;
  
   // Read predecessor dhtnode_t from wire
   dhtnode_t pred;
@@ -1164,40 +1204,16 @@ void DhtNode::handleWlcmAndCloseCxn(
   connection.readAll((void *) &pred, pred_size);
   connection.close();
 
-  const dhtnode_t& succ = msg.node;
-
   // Report WLCM message w/successor/predecessor data
   std::cout << "\t- We've been welcomed into the DHT! Here are our new predecessor/successor nodes:" <<
       "\n\t\t- Predecessor: <id: " << (int) pred.id << ", port: " << 
       (int) ntohs(pred.port) << ", ipv4: " << stringifyIpv4(pred.ipv4) << 
-      ">\n\t\t- Successor: <id: " << (int) succ.id << ", port: " << 
+      ">\n\t\t- Successor:   <id: " << (int) succ.id << ", port: " << 
       (int) ntohs(succ.port) << ", ipv4: " << stringifyIpv4(succ.ipv4) << ">" << std::endl;
 
-  // Assimilate provided predecessor/successor
-  finger_t& predecessor_finger = getPredecessor();
-  predecessor_finger.node_id = pred.id;
-  predecessor_finger.remote
-      .setRemotePort(ntohs(pred.port))
-      .setRemoteIpv4Address(ntohl(pred.ipv4));
-
-  finger_t& successor_finger = fingerTable_.front();
-  successor_finger.node_id = succ.id;
-  successor_finger.remote
-      .setRemotePort(ntohs(succ.port))
-      .setRemoteIpv4Address(ntohl(succ.ipv4));
-
-  // Reload db b/c our predecessor changed
-  reloadDb();
-
-  // Fix finger table
-  fixUp(0);
-  fixDown(fingerTable_.size() - 1);
-}
-
-void DhtNode::handleSrch(const dhtmsg_t& msg, const Connection& connection) {
-  std::cout << "HANDLE srch DIE" << std::endl; 
-  exit(1);
-
+  // Make predecessor/successor nodes provided in WLCM message our new predecessor/successor nodes
+  updatePredecessorAndImageDb(pred.id, ntohs(pred.port), ntohl(pred.ipv4));
+  updateSuccessor(succ.id, ntohs(succ.port), ntohl(succ.ipv4));
 }
 
 bool DhtNode::doesJoinCollide(const dhtmsg_t& join_msg) const {
@@ -1244,7 +1260,7 @@ void DhtNode::returnNotFoundToImageProxy(const dhtsrch_t& srch_pkt) {
 }
 
 void DhtNode::reportDhtMsgReceived(const dhtmsg_t& dhtmsg) const {
-  std::cout << "Received " << getDhtTypeString(static_cast<DhtType>(dhtmsg.header.type))
+  std::cout << "\nReceived " << getDhtTypeString(static_cast<DhtType>(dhtmsg.header.type))
       << " message!" << std::endl;
 }
 
@@ -1264,6 +1280,10 @@ std::string DhtNode::getDhtTypeString(DhtType type) const {
       return SRCH_STR;
     case SRCH_ATLOC:
       return SRCH_ATLOC_STR;
+    case RPLY:
+      return RPLY_STR;
+    case MISS:
+      return MISS_STR;
     default:
       std::cout << "Invalid NodeType: " << type << std::endl;
       exit(1);

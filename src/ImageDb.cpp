@@ -23,7 +23,7 @@ void ImageDb::load(uint8_t start, uint8_t end) {
   numImages_ = 0;
 
   // Report that we're loading the db with images in our range
-  std::cout << "IMGDB: Loading ImageDb with images in range: (" << (int) idRange_.start <<
+  std::cout << "\t- Loading ImageDb with images in range: (" << (int) idRange_.start <<
       ", " << (int) idRange_.end << "]" << std::endl;
 
   // Load images
@@ -67,8 +67,8 @@ void ImageDb::storeImage(
   image.name = file_name;
 
   // Report that we'res storing a new image
-  std::cout << "Storing new image in db: <id: " << (int) image.id << ", name: " <<
-      image.name << ">" << std::endl;
+  std::cout << "\t\t- Storing new image in db: <id: " << (int) image.id << ", name: " <<
+      image.name << ", idx: " << (int) numImages_ << ">" << std::endl;
 
   // Update bloom filter
   bloomFilter_ |= (1L << (int) bfIDX(BFIDX1, md)) |
@@ -80,7 +80,7 @@ void ImageDb::storeImage(
 
 void ImageDb::cacheImage(const std::string& file_name) {
   // Report that we're trying to cache the image
-  std::cout << "\t- Attempting to caching image!" << std::endl;
+  std::cout << "\t- Attempting to cache image..." << std::endl;
  
   // Compute SHA1 hash and id of image name
   unsigned char md[SHA1_MDLEN];
@@ -89,8 +89,14 @@ void ImageDb::cacheImage(const std::string& file_name) {
 
   // Insert into db, if there's room
   if (numImages_ != MAX_DB_SIZE) {
+    // Add image to the cache
     storeImage(id, md, file_name);
+    
+    // Report that we've cached the image
+    std::cout << "\t- Successfully cached image!" << std::endl;
+
   } else {
+    // Report that the cache is full
     std::cout << "\t- Couldn't cache image because db is full!" << std::endl;
   }
 }
